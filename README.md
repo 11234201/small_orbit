@@ -1,0 +1,18 @@
+# 小事星球 · 轻量离线待办
+
+面向个人工作和生活的 Windows / Android 小工具。用泡泡、纸片和卡牌整理小事，默认泡泡；越重要、越紧急，泡泡越大。提供可选运动节奏、完成与撤销、日期提醒和每日/每周重复。
+
+2026-11-10：0.1.0 离线预览版已完成，两端安装包已构建。共用 Flutter 界面和本地数据模型，分别接入 Windows 托盘和 Android 系统闹钟。独立离线运行，手动导出/恢复，恢复前自动备份。17 项 Flutter 测试及 5 项 Android 调度测试通过；原生提醒和托盘的真机验收边界见验证记录。
+
+- `dist/`：本地交付安装包及 Windows 便携目录，不提交 Git。
+- [使用说明](docs/user_guide.md)：安装、交互、提醒和备份。
+- [构建说明](docs/build.md)：固定环境、构建和测试命令。
+- [验证记录](docs/validation.md)：测试证据与仍需真机验证的范围。
+- [后续路线](docs/roadmap.md)：真机可靠性、交互打磨、性能与升级、稳定版的推进顺序。
+- `src/small_orbit/`：Flutter 应用与 Android/Windows 原生集成。
+- `scripts/`：工具链准备、构建、打包和几何图标生成。
+- `docs/`：需求、调研、实施记录和 Flutter 渲染预览。
+
+主要使用环境：Android 15、Windows 10/11 x64；最低 Android 8.0。首版不含账号、在线同步或订阅服务。
+
+决策见 [调研](docs/research.md)、[需求](docs/requirements.md)、[展示设计](docs/interface_directions.md) 和 [实施计划](docs/implementation_plan.md)。
