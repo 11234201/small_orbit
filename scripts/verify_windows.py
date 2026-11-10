@@ -18,10 +18,13 @@ with zipfile.ZipFile(archive) as bundle:
         "small_orbit.exe", "flutter_windows.dll", "msvcp140.dll",
         "vcruntime140.dll", "vcruntime140_1.dll", "data/app.so",
         "data/icudtl.dat", "data/flutter_assets/AssetManifest.bin", "使用说明.md",
+        "LICENSE.txt", "data/flutter_assets/NOTICES.Z",
     ]:
         assert f"{bundle_name}/{required}" in names, f"Missing {required}"
+    license_entry = next(name for name in bundle.namelist() if name.replace("\\", "/") == f"{bundle_name}/LICENSE.txt")
+    assert bundle.read(license_entry) == (root / "LICENSE").read_bytes(), "License differs from source"
     for name in names:
         assert not name.endswith((".jks", ".keystore", "key.properties", "tasks.json")), name
-print("Windows ZIP verified: CRC, application, engine, AOT, assets, CRT and guide")
+print("Windows ZIP verified: CRC, application, engine, AOT, assets, CRT, guide and licenses")
 print("Bytes:", archive.stat().st_size)
 print("SHA256:", hashlib.sha256(archive.read_bytes()).hexdigest())

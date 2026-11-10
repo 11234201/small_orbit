@@ -2,6 +2,19 @@
 
 使用 Flutter stable 3.47.9 / Dart 3.13.7，Flutter 提交 `c197ca5199e9ee5661e865596c9c07294dfab51c`。依赖固定于 `src/small_orbit/pubspec.lock`。Android 使用 JDK 17、Gradle 9.3.1、AGP 9.1.0。
 
+## 在自己的开发环境构建
+
+克隆仓库后，进入 `src/small_orbit`，运行 `flutter doctor -v` 检查环境，再执行 `flutter pub get`、`flutter analyze` 和 `flutter test --timeout 120s`。
+
+- Windows：安装 Visual Studio C++ 桌面开发工具和 Windows SDK，在 Windows 上执行 `flutter build windows --release`。结果位于 `build/windows/x64/runner/Release/`，分发时须保留整个目录及所需的 VC++ 运行库。
+- Android：准备 Android SDK 和 JDK 17，执行 `flutter build apk --release`；ARM64 专用包可执行 `flutter build apk --release --split-per-abi --target-platform android-arm64`。结果位于 `build/app/outputs/flutter-apk/`。
+
+Android 公开包使用维护者私有发布签名；新克隆中没有签名配置时，当前工程会使用开发签名。自行构建的 APK 不能覆盖安装不同签名的公开包。要发布自己的包，应配置自己的 `android/key.properties` 和密钥；密钥及口令不进入 Git。
+
+以下脚本记录的是维护者的固定环境，不是通用安装向导；其他开发者可使用上面的 Flutter 标准命令。`bootstrap_remote.sh`、Android 构建和共用验证脚本包含固定服务器路径，Windows 构建脚本使用仓库内 `.toolchain/flutter`。发布过程另见 [Release 维护说明](releasing.md)。
+
+## 维护者的固定环境
+
 远端工程 `/home/wzh/my_code/todo_list`，Flutter 上游 `/home/wzh/open_source/flutter`。SDK、缓存、签名和输出保留在远端项目的忽略目录。
 
 ## Android
@@ -35,7 +48,7 @@ cd android
 
 此机器未开启开发者模式。构建脚本在遇到符号链接权限问题时，依据 `.flutter-plugins-dependencies` 自动创建指向项目缓存的 NTFS Junction 并重试，无需改全局系统设置。
 
-打包附带 Visual Studio 可再分发目录中的 x64 CRT DLL。Flutter 依赖许可保留在 `data/flutter_assets/NOTICES.Z`。
+打包附带 Visual Studio 可再分发目录中的 x64 CRT DLL、项目 `LICENSE.txt` 和使用说明。Flutter 依赖许可保留在 `data/flutter_assets/NOTICES.Z`。
 
 ## 候选版版本和统一回归
 
