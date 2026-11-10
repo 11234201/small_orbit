@@ -1,7 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'task_model.dart';
+
+class UnsupportedBackupVersion extends FormatException {
+  const UnsupportedBackupVersion() : super('备份版本不支持，请使用较新版本的小事星球打开');
+}
 
 class BackupCodec {
   static const maxBytes = 16 * 1024 * 1024;
@@ -23,7 +28,13 @@ class BackupCodec {
       final raw = jsonDecode(source);
       if (raw is! Map || raw['format'] != 'small-orbit')
         throw const FormatException('不是小事星球备份');
-      if (raw['version'] != 1) throw const FormatException('备份版本不支持，请升级应用');
+      final version = raw['version'];
+      if (version is int && version > 1) {
+        throw const UnsupportedBackupVersion();
+      }
+      if (version is! int || version != 1) {
+        throw const FormatException('备份版本无效');
+      }
       final payload = raw['payload'];
       if (payload is! String ||
           sha256.convert(utf8.encode(payload)).toString() != raw['sha256']) {
@@ -51,7 +62,15 @@ class LocalStore {
   Future<String> readBounded(File file) async {
     if (await file.length() > BackupCodec.maxBytes)
       throw const FormatException('文件超过 16 MB');
-    return file.readAsString();
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in file.openRead(0, BackupCodec.maxBytes + 1)) {
+      bytes.add(chunk);
+    }
+    if (bytes.length > BackupCodec.maxBytes)
+      throw const FormatException('文件超过 16 MB');
+    // Decode separately so malformed UTF-8 is distinguishable from a genuine
+    // filesystem/permission failure. Both must leave the original untouched.
+    return utf8.decode(bytes.takeBytes());
   }
 
   Future<OrbitDocument> load() async {
@@ -60,7 +79,13 @@ class LocalStore {
     if (await current.exists()) {
       try {
         return BackupCodec.decode(await readBounded(current));
-      } catch (error) {
+      } on UnsupportedBackupVersion {
+        // A downgrade must never replace newer data with an older recovery copy.
+        rethrow;
+      } on FormatException catch (error) {
+        // A filesystem failure is not evidence of corruption. Do not roll a
+        // valid current database back merely because it was temporarily locked
+        // or unreadable; leave both copies untouched and let the user retry.
         primaryError = error;
       }
     }
@@ -77,7 +102,9 @@ class LocalStore {
         await current.writeAsString(BackupCodec.encode(document), flush: true);
         recoveryNotice = '检测到保存中断，已恢复上一次完整数据。';
         return document;
-      } catch (_) {
+      } on UnsupportedBackupVersion {
+        rethrow;
+      } on FormatException {
         throw StateError('本地数据及恢复副本均无法读取。原文件已保留，请从备份恢复。');
       }
     }
@@ -120,6 +147,50 @@ class LocalStore {
     ); // Failure must leave current data untouched.
     await save(incoming);
     return file;
+  }
+
+  /// Recovery when neither database copy can be loaded. Preserve the exact
+  /// originals before replacing anything, including an interrupted pending file.
+  Future<Directory> recover(OrbitDocument incoming) async {
+    BackupCodec.decode(BackupCodec.encode(incoming));
+    final originals = [
+      current,
+      previous,
+      File('${directory.path}/tasks.pending.json'),
+    ];
+    for (final original in originals) {
+      if (!await original.exists()) continue;
+      try {
+        BackupCodec.decode(await readBounded(original));
+      } on UnsupportedBackupVersion {
+        // Only a newer application should interpret or replace these files.
+        rethrow;
+      } on FormatException {
+        // Broken bytes are precisely what this recovery route preserves.
+      }
+    }
+    final archive = Directory(
+      '${backupDirectory.path}/recovery-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    await archive.create(recursive: true);
+    for (final original in originals) {
+      if (!await original.exists()) continue;
+      final copy = await original.copy(
+        '${archive.path}/${original.uri.pathSegments.last}',
+      );
+      final handle = await copy.open(mode: FileMode.append);
+      try {
+        await handle.flush();
+      } finally {
+        await handle.close();
+      }
+      final expected = await sha256.bind(original.openRead()).first;
+      final actual = await sha256.bind(copy.openRead()).first;
+      if (expected != actual) throw StateError('原文件备份校验失败，没有恢复数据');
+    }
+    await save(incoming);
+    recoveryNotice = '已从备份恢复；原文件已保留在 ${archive.path}';
+    return archive;
   }
 
   Future<List<File>> backups() async {

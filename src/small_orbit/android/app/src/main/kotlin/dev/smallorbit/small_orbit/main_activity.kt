@@ -27,7 +27,11 @@ class MainActivity : FlutterActivity() {
                         }
                         "getNotificationStatus" -> {
                             val alarms = getSystemService(AlarmManager::class.java)
+                            @Suppress("DEPRECATION")
+                            val packageInfo = packageManager.getPackageInfo(packageName, 0)
                             result.success(mapOf("notifications" to getSystemService(NotificationManager::class.java).areNotificationsEnabled(),
+                                "version" to packageInfo.versionName,
+                                "channel" to ReminderScheduler.channelEnabled(this),
                                 "exact" to (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms())))
                         }
                         "requestNotifications" -> {
@@ -40,7 +44,10 @@ class MainActivity : FlutterActivity() {
                             } else { result.success(null) }
                         }
                         "openNotificationSettings" -> {
-                            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,packageName))
+                            val action = if (getSystemService(NotificationManager::class.java).areNotificationsEnabled())
+                                Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS else Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                            startActivity(Intent(action).putExtra(Settings.EXTRA_APP_PACKAGE,packageName)
+                                .putExtra(Settings.EXTRA_CHANNEL_ID, ReminderScheduler.channelId))
                             result.success(null)
                         }
                         "requestExactAlarms" -> {

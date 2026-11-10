@@ -10,25 +10,72 @@ class OrbitController extends ChangeNotifier {
   final DateTime Function() clock;
   OrbitDocument document = OrbitDocument();
   Future<void> _queue = Future.value();
+  bool _closing = false;
+  int _failedOperations = 0;
   Future<void> Function(OrbitDocument)? onCommitted;
   OrbitTask? _undoTask;
   String? _undoId;
   String? undoLabel;
   String? notice;
+  String? _startupRolloverNotice;
   bool get canUndo => _undoId != null;
 
   Future<void> initialize() async {
     final loaded = await store.load();
-    document = loaded.materialize(clock());
-    if (!identical(loaded, document)) await store.save(document);
+    document = loaded;
     notice = store.recoveryNotice;
+    _startupRolloverNotice = null;
+    final next = loaded.materialize(clock());
+    if (!identical(loaded, next)) {
+      try {
+        await store.save(next);
+        document = next;
+      } catch (error) {
+        // Loading a valid database succeeded. Optional startup maintenance can
+        // still fail because the disk is full or history reached its limit.
+        // Keep the durable state accessible for export/deletion/retry instead
+        // of sending it to the corrupt-file recovery screen.
+        notice =
+            '${notice == null ? '' : '$notice\n'}'
+            '小事已打开，但跨天历史暂未保存。可先导出备份、检查存储空间或删除不需要的任务后重试：$error';
+        _startupRolloverNotice = notice;
+      }
+    }
     notifyListeners();
   }
 
-  Future<void> _enqueue(Future<void> Function() action) {
+  Future<T> _enqueue<T>(Future<T> Function() action) {
+    if (_closing) return Future.error(StateError('正在保存并退出，请稍候'));
     final result = _queue.then((_) => action());
-    _queue = result.catchError((Object _) {});
+    _queue = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {
+        _failedOperations++;
+      },
+    );
     return result;
+  }
+
+  /// Export the state after all previously requested writes have finished.
+  Future<OrbitDocument> snapshot() => _enqueue(() async => document);
+
+  /// Stop accepting new writes before a native explicit-exit request. Every
+  /// operation already accepted is allowed to finish before the window closes.
+  Future<void> closeWrites({Future<void> Function()? afterDrain}) async {
+    final failuresBeforeClose = _failedOperations;
+    _closing = true;
+    try {
+      await _queue;
+      if (_failedOperations != failuresBeforeClose) {
+        throw StateError('保存没有完成，已保留窗口，请重试');
+      }
+      await afterDrain?.call();
+    } catch (_) {
+      // Native shutdown can also fail while flushing reminder receipts. A
+      // rejected quit must leave the existing window able to accept writes.
+      _closing = false;
+      rethrow;
+    }
   }
 
   Future<void> _publish(OrbitDocument next) async {
@@ -48,17 +95,37 @@ class OrbitController extends ChangeNotifier {
     final tasks = existing.tasks.toList();
     final index = tasks.indexWhere((item) => item.id == task.id);
     if (index >= 0) {
-      // Preserve newly materialized missed history when editing an open dialog.
-      task = task.copyWith(records: {...tasks[index].records, ...task.records});
+      // The editor owns task fields, never history. Its snapshot may predate a
+      // completion, undo, or midnight rollover made while it was open.
+      final previous = tasks[index];
+      var records = previous.records;
+      if (previous.repeat != RepeatKind.none &&
+          task.repeat == RepeatKind.none) {
+        records = Map.of(records);
+        final once = records.remove('once');
+        if (once != null) {
+          // A task that went once -> recurring -> once starts its new single
+          // occurrence pending. Preserve the earlier completion in day-level
+          // history; if that day is already complete, retain that existing
+          // completion instead of producing two rows for the same task/day.
+          final completedDay = dayKey(DateTime.parse(once).toLocal());
+          records[completedDay] ??= once;
+        }
+      }
+      task = task.copyWith(records: records);
       tasks[index] = task;
     } else {
       tasks.add(task);
     }
+    // A newly created or rescheduled recurrence may start in the past. Its
+    // history must be complete immediately, including an export or history
+    // view opened before the next reminder/rollover tick.
+    await _publish(existing.copyWith(tasks: tasks).materialize(clock()));
     if (_undoId == task.id) {
       _undoId = null;
       undoLabel = null;
+      notifyListeners();
     }
-    await _publish(existing.copyWith(tasks: tasks));
   });
 
   Future<void> complete(TaskOccurrence occurrence) => _enqueue(() async {
@@ -68,6 +135,14 @@ class OrbitController extends ChangeNotifier {
     );
     if (index < 0) return;
     final task = existing.tasks[index];
+    final active = task.activeAt(clock());
+    // A delayed tap/animation must not complete an occurrence that was moved
+    // to another day, changed to a different recurrence, or already rolled over.
+    if (active == null ||
+        active.key != occurrence.key ||
+        active.day != occurrence.day ||
+        task.repeat != occurrence.task.repeat)
+      return;
     if (task.records[occurrence.key] != null) return;
     final tasks = existing.tasks.toList();
     tasks[index] = task.copyWith(
@@ -128,12 +203,27 @@ class OrbitController extends ChangeNotifier {
 
   Future<void> settings(AppSettings settings) =>
       _enqueue(() => _publish(document.copyWith(settings: settings)));
+
+  /// Apply a UI preference change to the latest committed settings rather than
+  /// a snapshot captured before other queued writes. This preserves unrelated
+  /// changes and also lets a pending selection be changed back to its old value.
+  Future<void> updateSettings(AppSettings Function(AppSettings) update) =>
+      _enqueue(
+        () => _publish(document.copyWith(settings: update(document.settings))),
+      );
   Future<void> rollover() => _enqueue(() async {
     final next = document.materialize(clock());
     if (!identical(next, document))
       await _publish(next);
     else {
       notifyListeners();
+    }
+    if (_startupRolloverNotice != null) {
+      if (notice == _startupRolloverNotice) {
+        notice = store.recoveryNotice;
+        notifyListeners();
+      }
+      _startupRolloverNotice = null;
     }
   });
   Future<void> restore(OrbitDocument incoming) => _enqueue(() async {

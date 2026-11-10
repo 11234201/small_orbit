@@ -6,6 +6,7 @@
 #include <flutter/standard_method_codec.h>
 #include <memory>
 #include <optional>
+#include "WindowPlacement.h"
 
 class OfflineBridge {
  public:
@@ -16,10 +17,22 @@ class OfflineBridge {
   void AddTray();
   void ShowWindow();
   bool ShowNotification(const std::string& title, const std::string& body);
+  void RequestQuit();
+  void FinishQuit(bool ready);
+  bool IsVisible() const;
+  void QueueVisibilityUpdate();
+  void PublishVisibility();
   HWND window_;
+  WindowPlacement placement_;
   NOTIFYICONDATAW tray_{};
   bool trayAdded_ = false;
   UINT taskbarMessage_;
+  UINT showMessage_;
+  bool quitPending_ = false;
+  bool visibilityUpdateQueued_ = false;
+  std::optional<bool> lastVisibility_;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> windowChannel_;
 };
 #endif

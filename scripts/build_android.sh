@@ -2,6 +2,7 @@
 set -euo pipefail
 project_dir=/home/wzh/my_code/todo_list
 source "$project_dir/.toolchain/env.sh"
+source "$project_dir/scripts/read_version.sh"
 export PUB_HOSTED_URL=https://pub.dev
 cd "$project_dir/src/small_orbit"
 mkdir -p "$project_dir/.private" "$project_dir/dist" "$project_dir/logs"
@@ -26,5 +27,8 @@ fi
 cp "$project_dir/.private/key.properties" android/key.properties
 chmod 600 android/key.properties
 flutter build apk --release --target-platform android-arm64,android-arm,android-x64 > "$project_dir/logs/android_build.log" 2>&1
-cp build/app/outputs/flutter-apk/app-release.apk "$project_dir/dist/small_orbit-0.1.0-android.apk"
-sha256sum "$project_dir/dist/small_orbit-0.1.0-android.apk"
+cp build/app/outputs/flutter-apk/app-release.apk "$project_dir/dist/small_orbit-$ORBIT_VERSION-android.apk"
+sha256sum "$project_dir/dist/small_orbit-$ORBIT_VERSION-android.apk"
+flutter build apk --release --split-per-abi --target-platform android-arm64,android-arm,android-x64 > "$project_dir/logs/android_split_build.log" 2>&1
+cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "$project_dir/dist/small_orbit-$ORBIT_VERSION-android-arm64.apk"
+sha256sum "$project_dir/dist/small_orbit-$ORBIT_VERSION-android-arm64.apk"

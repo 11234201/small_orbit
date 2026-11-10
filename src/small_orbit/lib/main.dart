@@ -8,38 +8,75 @@ import 'core/local_store.dart';
 import 'core/orbit_controller.dart';
 import 'core/task_model.dart';
 import 'platform/reminder_service.dart';
+import 'platform/window_service.dart';
+import 'platform/startup_probe.dart';
 import 'ui/settings_panel.dart';
 import 'ui/task_editor.dart';
 import 'ui/task_stage.dart';
+import 'ui/startup_recovery.dart';
+
+WindowService? _windowService;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await startApplication();
+}
+
+Future<void> startApplication() async {
+  final startup = Stopwatch()..start();
+  LocalStore? store;
+  OrbitController? controller;
   try {
     final override = Platform.environment['SMALL_ORBIT_DATA_DIR'];
     final directory = override == null
         ? await getApplicationSupportDirectory()
         : Directory(override);
-    final controller = OrbitController(LocalStore(directory));
+    store = LocalStore(directory);
+    controller = OrbitController(store);
     await controller.initialize();
+    final dataReady = startup.elapsed;
     final reminders = ReminderService(controller);
     try {
       await reminders.start();
     } catch (_) {
       controller.notice = '提醒暂未就绪，可在设置中检查权限。';
     }
-    runApp(OrbitApp(controller: controller, reminders: reminders));
+    final loadedController = controller;
+    _windowService?.dispose();
+    final window = WindowService(
+      onPrepareToQuit: () async {
+        await loadedController.closeWrites(afterDrain: reminders.stop);
+        reminders.dispose();
+      },
+    )..register();
+    _windowService = window;
+    runApp(
+      OrbitApp(controller: controller, reminders: reminders, window: window),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(
+        recordStartupProbe(
+          loadedController.store,
+          dataReady,
+          startup.elapsed,
+          loadedController.document.tasks.length,
+          window.requestQuit,
+        ),
+      );
+    });
   } catch (error) {
+    controller?.dispose();
+    _windowService?.dispose();
+    _windowService = WindowService(onPrepareToQuit: () async {})..register();
     runApp(
       MaterialApp(
-        home: Scaffold(
-          body: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: SelectableText(
-                '小事星球没有改动你的数据。\n\n启动失败：$error\n\n请保留本地文件，检查存储空间和文件权限后重新打开。',
-              ),
-            ),
-          ),
+        locale: const Locale('zh', 'CN'),
+        supportedLocales: const [Locale('zh', 'CN')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
+        home: StartupRecovery(
+          error: error,
+          store: store,
+          onRetry: startApplication,
         ),
       ),
     );
@@ -51,9 +88,11 @@ class OrbitApp extends StatelessWidget {
     super.key,
     required this.controller,
     required this.reminders,
+    this.window,
   });
   final OrbitController controller;
   final ReminderService reminders;
+  final WindowService? window;
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: '小事星球',
@@ -61,6 +100,37 @@ class OrbitApp extends StatelessWidget {
     locale: const Locale('zh', 'CN'),
     supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
+    builder: (context, child) => window == null
+        ? child!
+        : ListenableBuilder(
+            listenable: window!,
+            builder: (context, _) => Stack(
+              children: [
+                AbsorbPointer(
+                  absorbing: window!.isClosing,
+                  child: TickerMode(
+                    enabled: window!.isVisible && !window!.isClosing,
+                    child: ExcludeFocus(
+                      excluding: window!.isClosing,
+                      child: child!,
+                    ),
+                  ),
+                ),
+                if (window!.isClosing) ...[
+                  const ModalBarrier(
+                    dismissible: false,
+                    color: Color(0xccfcfaf7),
+                  ),
+                  const Center(
+                    child: Material(
+                      color: Colors.transparent,
+                      child: Text('正在保存并退出…'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
     theme: ThemeData(
       useMaterial3: true,
       scaffoldBackgroundColor: const Color(0xfffcfaf7),
@@ -105,21 +175,24 @@ class OrbitHome extends StatefulWidget {
 class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   final TextEditingController _quick = TextEditingController();
   final FocusNode _quickFocus = FocusNode();
-  bool _today = true, _adding = false;
+  bool _today = true, _adding = false, _editing = false;
   int _replay = 0;
   OrbitController get controller => widget.controller;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.reminders.addListener(_reminderChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (controller.notice != null) _message(controller.notice!);
+      _reminderChanged();
     });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.reminders.removeListener(_reminderChanged);
     _quick.dispose();
     _quickFocus.dispose();
     super.dispose();
@@ -128,10 +201,14 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      widget.reminders.tick();
-      widget.reminders.synchronize(controller.document);
+      unawaited(widget.reminders.tick(forceSync: true));
       setState(() => _replay++);
     }
+  }
+
+  void _reminderChanged() {
+    final error = widget.reminders.lastError;
+    if (error != null) _message(error);
   }
 
   void _message(String text) {
@@ -161,18 +238,31 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   }
 
   Future<void> _edit({OrbitTask? task}) async {
-    final edited = await editTask(
-      context,
-      task: task,
-      title: task == null ? _quick.text : '',
-    );
-    if (edited == null || !mounted) return;
-    await _safe(() async {
-      if (edited.reminderMinute != null)
-        await widget.reminders.requestNotifications();
-      await controller.upsert(edited);
-      if (task == null) _quick.clear();
-    });
+    if (_editing || (task == null && _adding)) return;
+    setState(() => _editing = true);
+    final draft = task == null ? _quick.text : '';
+    try {
+      // Keep the editor and its draft open until the write is durable. A disk
+      // failure can then be retried without losing the user's changes.
+      final edited = await editTask(
+        context,
+        task: task,
+        title: draft,
+        onSave: controller.upsert,
+      );
+      if (edited == null || !mounted) return;
+      if (task == null && _quick.text == draft) _quick.clear();
+      if (edited.reminderMinute != null) {
+        try {
+          await widget.reminders.requestNotifications();
+          await widget.reminders.retry();
+        } catch (_) {
+          _message('小事已保存，提醒暂未就绪，可在设置中重试。');
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _editing = false);
+    }
   }
 
   Future<void> _menu(OrbitTask task) async {
@@ -293,6 +383,15 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
         ),
         _UndoIntent: CallbackAction<_UndoIntent>(
           onInvoke: (_) {
+            final focusedContext = FocusManager.instance.primaryFocus?.context;
+            if (focusedContext != null &&
+                Actions.maybeFind<UndoTextIntent>(focusedContext) != null) {
+              Actions.invoke(
+                focusedContext,
+                const UndoTextIntent(SelectionChangedCause.keyboard),
+              );
+              return null;
+            }
             _safe(controller.undo);
             return null;
           },
@@ -399,7 +498,9 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                                 isDense: true,
                                 suffixIcon: IconButton(
                                   tooltip: '日期、提醒和重要程度',
-                                  onPressed: () => _edit(),
+                                  onPressed: _adding || _editing
+                                      ? null
+                                      : () => _edit(),
                                   icon: const Icon(Icons.tune, size: 19),
                                 ),
                               ),
@@ -448,8 +549,8 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                                 ),
                               ],
                               onChanged: (value) => _safe(
-                                () => controller.settings(
-                                  settings.copyWith(display: value),
+                                () => controller.updateSettings(
+                                  (current) => current.copyWith(display: value),
                                 ),
                               ),
                             ),
@@ -483,8 +584,9 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                                   ),
                                 ],
                                 onChanged: (value) => _safe(
-                                  () => controller.settings(
-                                    settings.copyWith(motion: value),
+                                  () => controller.updateSettings(
+                                    (current) =>
+                                        current.copyWith(motion: value),
                                   ),
                                 ),
                               ),
@@ -500,8 +602,9 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                               tooltip: settings.paused ? '继续运动' : '暂停运动',
                               visualDensity: VisualDensity.compact,
                               onPressed: () => _safe(
-                                () => controller.settings(
-                                  settings.copyWith(paused: !settings.paused),
+                                () => controller.updateSettings(
+                                  (current) =>
+                                      current.copyWith(paused: !current.paused),
                                 ),
                               ),
                               icon: Icon(
@@ -518,8 +621,7 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                           items: items,
                           settings: settings,
                           replay: _replay,
-                          onComplete: (item) =>
-                              _safe(() => controller.complete(item)),
+                          onComplete: controller.complete,
                           onEdit: _menu,
                           onDelete: (task) =>
                               _safe(() => controller.delete(task.id)),

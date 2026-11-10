@@ -19,14 +19,27 @@ class SettingsPanel extends StatefulWidget {
   State<SettingsPanel> createState() => _SettingsPanelState();
 }
 
-class _SettingsPanelState extends State<SettingsPanel> {
+class _SettingsPanelState extends State<SettingsPanel>
+    with WidgetsBindingObserver {
   Map<String, dynamic> _status = {};
   String? _message;
   bool _busy = false;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
   }
 
   Future<void> _refresh() async {
@@ -55,7 +68,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   Future<void> _export({File? backup}) async {
     final bytes = backup == null
-        ? utf8.encode(BackupCodec.encode(widget.controller.document))
+        ? utf8.encode(BackupCodec.encode(await widget.controller.snapshot()))
         : await backup.readAsBytes();
     final destination = await FilePicker.platform.saveFile(
       dialogTitle: '保存小事星球备份',
@@ -160,151 +173,192 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    listenable: Listenable.merge([widget.controller, widget.reminders]),
     builder: (context, _) {
       final settings = widget.controller.document.settings;
-      return AlertDialog(
-        title: const Text('让小事适合你'),
-        content: SizedBox(
-          width: 420,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('减少动态效果'),
-                  subtitle: const Text('泡泡静止，完成反馈更轻'),
-                  value: settings.reduceMotion,
-                  onChanged: _busy
-                      ? null
-                      : (value) => _run(
-                          () => widget.controller.settings(
-                            settings.copyWith(reduceMotion: value),
+      return PopScope(
+        canPop: !_busy,
+        child: AlertDialog(
+          title: const Text('让小事适合你'),
+          content: SizedBox(
+            width: 420,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('减少动态效果'),
+                    subtitle: const Text('泡泡静止，完成反馈更轻'),
+                    value: settings.reduceMotion,
+                    onChanged: _busy
+                        ? null
+                        : (value) => _run(
+                            () => widget.controller.updateSettings(
+                              (current) =>
+                                  current.copyWith(reduceMotion: value),
+                            ),
                           ),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('开启任务提醒'),
+                    value: settings.remindersEnabled,
+                    onChanged: _busy
+                        ? null
+                        : (value) => _run(() async {
+                            await widget.controller.updateSettings(
+                              (current) =>
+                                  current.copyWith(remindersEnabled: value),
+                            );
+                            if (value) {
+                              await widget.reminders.requestNotifications();
+                              await widget.reminders.retry();
+                            }
+                            await _refresh();
+                          }),
+                  ),
+                  if (widget.reminders.platform ==
+                      ReminderPlatform.android) ...[
+                    Text(
+                      _status.isEmpty
+                          ? '正在读取系统通知状态…'
+                          : _status['notifications'] == true
+                          ? '系统通知：已允许'
+                          : '系统通知：未允许，提醒不会显示',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    Text(
+                      _status.isEmpty
+                          ? '正在读取准时提醒状态…'
+                          : _status['exact'] == true
+                          ? '准时提醒：已允许'
+                          : '准时提醒：未允许，系统可能延后提醒',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    if (_status['notifications'] == true &&
+                        _status['channel'] == false)
+                      const Text(
+                        '“小事提醒”通知类别已关闭，提醒不会显示。',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(() async {
+                                  await widget.reminders
+                                      .openNotificationSettings();
+                                  await _refresh();
+                                }),
+                          child: const Text('通知权限'),
                         ),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('开启任务提醒'),
-                  value: settings.remindersEnabled,
-                  onChanged: _busy
-                      ? null
-                      : (value) => _run(() async {
-                          if (value)
-                            await widget.reminders.requestNotifications();
-                          await widget.controller.settings(
-                            settings.copyWith(remindersEnabled: value),
-                          );
-                          await _refresh();
-                        }),
-                ),
-                if (Platform.isAndroid) ...[
-                  Text(
-                    _status['notifications'] == true
-                        ? '系统通知：已允许'
-                        : '系统通知：未允许，提醒不会显示',
-                    style: const TextStyle(fontSize: 12),
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(widget.reminders.requestExactAlarms),
+                          child: const Text('准时提醒权限'),
+                        ),
+                        TextButton(
+                          onPressed: _busy ? null : () => _run(_refresh),
+                          child: const Text('刷新状态'),
+                        ),
+                      ],
+                    ),
+                    const Text(
+                      '重启后会重新安排提醒。系统强制停止应用后，需要重新打开；请在手机设置中允许后台运行。',
+                      style: TextStyle(fontSize: 12, color: Color(0xff777180)),
+                    ),
+                  ] else
+                    const Text(
+                      '关闭窗口后留在托盘继续提醒；选择“退出”后停止提醒。Windows 的勿扰模式可能隐藏通知。',
+                      style: TextStyle(fontSize: 12, color: Color(0xff777180)),
+                    ),
+                  if (widget.reminders.lastError != null)
+                    Text(
+                      widget.reminders.lastError!,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  TextButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _run(() async {
+                            await widget.reminders.retry();
+                            await _refresh();
+                            if (mounted)
+                              setState(
+                                () => _message = '已按当前任务重新安排提醒，实际显示取决于系统权限。',
+                              );
+                          }),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('重试提醒'),
                   ),
-                  Text(
-                    _status['exact'] == true ? '准时提醒：已允许' : '准时提醒：未允许，系统可能延后提醒',
-                    style: const TextStyle(fontSize: 12),
+                  const Divider(height: 32),
+                  const Text(
+                    '带着小事换个地方',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
                   ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '两台设备分别离线使用，导出文件后在另一台恢复。',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
                   Wrap(
                     spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      TextButton(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(() async {
-                                await ReminderService.channel.invokeMethod(
-                                  'openNotificationSettings',
-                                );
-                                await _refresh();
-                              }),
-                        child: const Text('通知权限'),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : () => _run(_export),
+                        icon: const Icon(Icons.ios_share, size: 18),
+                        label: const Text('导出备份'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : () => _run(_import),
+                        icon: const Icon(Icons.restore, size: 18),
+                        label: const Text('从文件恢复'),
                       ),
                       TextButton(
-                        onPressed: _busy
-                            ? null
-                            : () => _run(widget.reminders.requestExactAlarms),
-                        child: const Text('准时提醒权限'),
-                      ),
-                      TextButton(
-                        onPressed: _busy ? null : () => _run(_refresh),
-                        child: const Text('刷新状态'),
+                        onPressed: _busy ? null : () => _run(_backups),
+                        child: const Text('自动备份'),
                       ),
                     ],
                   ),
-                  const Text(
-                    '重启后会重新安排提醒。系统强制停止应用后，需要重新打开；请在手机设置中允许后台运行。',
-                    style: TextStyle(fontSize: 12, color: Color(0xff777180)),
-                  ),
-                ] else
-                  const Text(
-                    '关闭窗口后留在托盘继续提醒；选择“退出”后停止提醒。Windows 的勿扰模式可能隐藏通知。',
-                    style: TextStyle(fontSize: 12, color: Color(0xff777180)),
-                  ),
-                const Divider(height: 32),
-                const Text(
-                  '带着小事换个地方',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  '两台设备分别离线使用，导出文件后在另一台恢复。',
-                  style: TextStyle(fontSize: 12),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _busy ? null : () => _run(_export),
-                      icon: const Icon(Icons.ios_share, size: 18),
-                      label: const Text('导出备份'),
+                  if (_busy)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: LinearProgressIndicator(),
                     ),
-                    OutlinedButton.icon(
-                      onPressed: _busy ? null : () => _run(_import),
-                      icon: const Icon(Icons.restore, size: 18),
-                      label: const Text('从文件恢复'),
+                  if (_message != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        _message!,
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
-                    TextButton(
-                      onPressed: _busy ? null : () => _run(_backups),
-                      child: const Text('自动备份'),
-                    ),
-                  ],
-                ),
-                if (_busy)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: LinearProgressIndicator(),
-                  ),
-                if (_message != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Text(
-                      _message!,
-                      style: const TextStyle(fontSize: 12),
+                  const SizedBox(height: 18),
+                  Text(
+                    '小事星球${_status['version'] == null ? '' : ' ${_status['version']}'} · 数据保存在此设备',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xff918895),
                     ),
                   ),
-                const SizedBox(height: 18),
-                const Text(
-                  '小事星球 0.1.0 · 数据保存在此设备',
-                  style: TextStyle(fontSize: 11, color: Color(0xff918895)),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
+          actions: [
+            TextButton(
+              onPressed: _busy ? null : () => Navigator.pop(context),
+              child: const Text('好了'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('好了'),
-          ),
-        ],
       );
     },
   );

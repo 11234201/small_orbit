@@ -10,40 +10,104 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 import java.time.ZoneId
 
 object ReminderScheduler {
-    private const val channelId = "little_things"
+    const val channelId = "little_things"
     private fun prefs(context: Context) = context.getSharedPreferences("orbit_reminders", Context.MODE_PRIVATE)
+    private var receiptJournal: ReminderReceiptJournal? = null
+    private val configJournal = ReminderConfigJournal<JSONObject>()
+    private fun receipts(context: Context): ReminderReceiptJournal {
+        receiptJournal?.let { return it }
+        val store = prefs(context.applicationContext)
+        return ReminderReceiptJournal(
+            { store.getStringSet("delivered", emptySet())!!.toSet() },
+            { store.edit().putStringSet("delivered", it).commit() },
+        ).also { receiptJournal = it }
+    }
     fun createChannel(context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(channelId, "小事提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "你为小事星球设置的本地待办提醒"
             })
     }
-    private fun config(context: Context) = JSONObject(prefs(context).getString("config", "{\"enabled\":false,\"tasks\":[]}")!!)
-    private fun alarmIntent(context: Context, id: String, day: String = ""): PendingIntent {
-        val intent = Intent(context, ReminderReceiver::class.java).apply {
+    fun channelEnabled(context: Context): Boolean {
+        val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(channelId)
+        return channel != null && channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
+    private fun readConfig(context: Context) = JSONObject(prefs(context).getString("config", "{\"enabled\":false,\"tasks\":[]}")!!)
+    private fun config(context: Context) = configJournal.current { readConfig(context) }
+    private fun reminderIntent(context: Context, id: String, day: String = "") =
+        Intent(context, ReminderReceiver::class.java).apply {
             data = Uri.parse("smallorbit://reminder/$id")
             putExtra("id", id); putExtra("day", day)
         }
-        return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    private fun alarmIntent(context: Context, id: String, day: String): PendingIntent =
+        PendingIntent.getBroadcast(context, 0, reminderIntent(context,id,day), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    private fun cancelAlarm(context: Context, id: String) {
+        val pending = PendingIntent.getBroadcast(context, 0, reminderIntent(context,id),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return
+        context.getSystemService(AlarmManager::class.java).cancel(pending)
+        pending.cancel()
     }
     private fun cancel(context: Context, id: String) {
-        context.getSystemService(AlarmManager::class.java).cancel(alarmIntent(context, id))
+        cancelAlarm(context, id)
         context.getSystemService(NotificationManager::class.java).cancel(id, 1)
+    }
+    private fun sameTaskData(left: JSONObject, right: JSONObject?): Boolean {
+        if (right == null || left.length() != right.length()) return false
+        val keys = left.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (!right.has(key)) return false
+            val first = left.get(key)
+            val second = right.get(key)
+            if (first is JSONObject) {
+                if (second !is JSONObject || !sameTaskData(first,second)) return false
+            } else if (first != second) return false
+        }
+        return true
     }
     fun update(context: Context, source: String) {
         val incoming = JSONObject(source)
-        incoming.getJSONArray("tasks")
-        val old = config(context).getJSONArray("tasks")
-        for (i in 0 until old.length()) cancel(context, old.getJSONObject(i).getString("id"))
-        check(prefs(context).edit().putString("config", source).commit()) { "无法保存提醒配置" }
+        val tasks = incoming.getJSONArray("tasks")
+        val nextById = (0 until tasks.length()).associate {
+            val task = tasks.getJSONObject(it)
+            task.getString("id") to task
+        }
+        configJournal.update(
+            incoming = incoming,
+            // This is a rebuildable native cache. A damaged previous cache must
+            // not prevent the validated Flutter task file from replacing it.
+            read = {
+                try { readConfig(context).also { it.getJSONArray("tasks") } }
+                catch (_: Exception) { JSONObject().put("enabled", false).put("tasks", JSONArray()) }
+            },
+            persist = { prefs(context).edit().putString("config", source).commit() },
+            reconcile = { before, _ ->
+                val old = before.getJSONArray("tasks")
+                for (i in 0 until old.length()) {
+                    val task = old.optJSONObject(i) ?: continue
+                    val id = task.optString("id")
+                    if (id.isEmpty()) continue
+                    cancelAlarm(context,id)
+                    // Recompute against the newest incoming task. A failed
+                    // removal followed by undo must preserve its notification.
+                    // Compare JSON values so key reordering on restore is safe.
+                    if (!incoming.optBoolean("enabled") || !sameTaskData(task,nextById[id])) {
+                        context.getSystemService(NotificationManager::class.java).cancel(id,1)
+                    }
+                }
+            },
+        )
         scheduleAll(context, true)
     }
     fun scheduleAll(context: Context, strict: Boolean = false) {
+        var failure: Exception? = null
+        try { receipts(context).flush() } catch (error: Exception) { failure = error }
         try {
             createChannel(context)
             val config = config(context)
@@ -53,8 +117,13 @@ object ReminderScheduler {
                 if (config.optBoolean("enabled")) schedule(context, task) else cancel(context, task.getString("id"))
             }
         } catch (error: Exception) {
-            if (strict) throw error
-            android.util.Log.e("SmallOrbit", "Schedule failed", error)
+            if (failure == null) failure = error else failure.addSuppressed(error)
+        }
+        // Receipt failures must surface to Flutter's retry UI, but must not
+        // prevent scheduling the next occurrence after an alarm was consumed.
+        failure?.let {
+            if (strict) throw it
+            android.util.Log.e("SmallOrbit", "Schedule failed", it)
         }
     }
     private fun receipt(task: JSONObject, day: LocalDate) = "${task.getString("id")}:$day:${task.getInt("reminderMinute")}"
@@ -68,10 +137,10 @@ object ReminderScheduler {
         val repeat = task.getString("repeat")
         val start = LocalDate.parse(task.getString("date"))
         val today = LocalDate.now()
-        val delivered = prefs(context).getStringSet("delivered", emptySet())!!
+        val delivered = receipts(context).snapshot()
         val day = ReminderPlan.next(start,repeat,today,after) { candidate ->
             isComplete(task,candidate) || delivered.contains(receipt(task,candidate))
-        } ?: run { cancel(context,id); return }
+        } ?: run { cancelAlarm(context,id); return }
         val minute = task.getInt("reminderMinute")
         val instant = day.atTime(minute / 60, minute % 60).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val trigger = maxOf(instant, System.currentTimeMillis()+1000)
@@ -83,6 +152,17 @@ object ReminderScheduler {
         } catch (_: SecurityException) { alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,trigger,intent) }
     }
     fun deliver(context: Context, id: String, dayText: String) {
+        val journal = receipts(context)
+        try {
+            deliverOccurrence(context,id,dayText,journal)
+        } finally {
+            // Keep dirty receipts in memory on failure. The receiver's retry,
+            // later deliveries, resume, native scheduling, and Flutter
+            // synchronization all attempt persistence again.
+            journal.flush()
+        }
+    }
+    private fun deliverOccurrence(context: Context, id: String, dayText: String, journal: ReminderReceiptJournal) {
         val config = config(context)
         if (!config.optBoolean("enabled")) return
         val tasks = config.getJSONArray("tasks")
@@ -94,11 +174,11 @@ object ReminderScheduler {
         if (!ReminderPlan.contains(start,task.getString("repeat"),day) || due > System.currentTimeMillis()) {
             schedule(context,task); return
         }
-        val delivered = prefs(context).getStringSet("delivered", emptySet())!!.toMutableSet()
+        val delivered = journal.snapshot()
         val key = receipt(task,day)
         if (!isComplete(task,day) && day == LocalDate.now() && !delivered.contains(key)) {
             val notifications = context.getSystemService(NotificationManager::class.java)
-            if (notifications.areNotificationsEnabled()) {
+            if (notifications.areNotificationsEnabled() && channelEnabled(context)) {
                 val open = PendingIntent.getActivity(context,0,Intent(context,MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 },PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -109,9 +189,7 @@ object ReminderScheduler {
                     .setStyle(Notification.BigTextStyle().bigText(task.getString("title")))
                     .setAutoCancel(true).setContentIntent(open).build()
                 notifications.notify(id,1,notification)
-                delivered.add(key)
-                if (delivered.size > 20000) delivered.remove(delivered.first())
-                prefs(context).edit().putStringSet("delivered",delivered).commit()
+                journal.record(key)
             }
         }
         if (task.getString("repeat") != "none") schedule(context,task,day)

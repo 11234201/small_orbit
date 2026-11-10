@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import '../core/task_model.dart';
 import '../core/bubble_engine.dart';
+import 'bubble_surface.dart';
 
 const taskColors = [
   Color(0xffffddc7),
@@ -35,6 +37,9 @@ String occurrenceCaption(TaskOccurrence item) {
   return parts.join(' · ');
 }
 
+String priorityCaption(OrbitTask task) =>
+    '重要 ${['低', '中', '高'][task.importance - 1]} · 紧急 ${['低', '中', '高'][task.urgency - 1]}';
+
 class TaskStage extends StatefulWidget {
   const TaskStage({
     super.key,
@@ -63,12 +68,33 @@ class _TaskStageState extends State<TaskStage>
   bool _visible = true;
   int _page = 0;
   int _cardCursor = 0;
+  String? _cardIdentity;
   int _pageSize = 6;
   final Set<String> _finishing = {};
+  final Set<String> _pending = {};
+  final Map<String, (TaskOccurrence, int)> _departing = {};
+  final Map<String, (Timer, Completer<void>)> _exitTimers = {};
+  bool get _reduceMotion =>
+      widget.settings.reduceMotion || MediaQuery.disableAnimationsOf(context);
+  Duration get _motionDuration =>
+      _reduceMotion ? Duration.zero : const Duration(milliseconds: 180);
+  List<TaskOccurrence> get _displayItems {
+    final result = widget.items.toList();
+    for (final entry in _departing.entries) {
+      if (!result.any((item) => item.identity == entry.key)) {
+        result.insert(entry.value.$2.clamp(0, result.length), entry.value.$1);
+      }
+    }
+    return result;
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _visible =
+        WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     _ticker = createTicker((time) {
       final delta = _last == null
           ? 0.0
@@ -76,89 +102,183 @@ class _TaskStageState extends State<TaskStage>
       _last = time;
       if (_visible && widget.settings.display == DisplayMode.bubbles)
         _engine.step(delta);
-      if (!_visible ||
-          widget.settings.display != DisplayMode.bubbles ||
-          _engine.paused ||
-          (_engine.motion == MotionMode.opening && _engine.elapsed >= 6.5))
-        _ticker.stop();
-    })..start();
+      _syncTicker();
+    });
+  }
+
+  void _syncTicker() {
+    final shouldRun =
+        _visible &&
+        (widget.items.isNotEmpty || _departing.isNotEmpty) &&
+        widget.settings.display == DisplayMode.bubbles &&
+        _engine.moving &&
+        TickerMode.valuesOf(context).enabled;
+    if (shouldRun && !_ticker.isActive) {
+      _last = null;
+      _ticker.start();
+    } else if (!shouldRun && _ticker.isActive) {
+      _ticker.stop();
+      _last = null;
+    }
+  }
+
+  void _hold(String id, String reason, bool held) {
+    _engine.holdIdentity(id, reason, held);
+    _syncTicker();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _visible = state == AppLifecycleState.resumed;
     _last = null;
+    _syncTicker();
   }
 
   @override
   void didUpdateWidget(covariant TaskStage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.settings.display != widget.settings.display) {
+      _cardIdentity = null;
+    }
+    if (oldWidget.settings.display != widget.settings.display ||
+        (!oldWidget.settings.reduceMotion && widget.settings.reduceMotion)) {
+      _departing.clear();
+      _finishing.clear();
+      _cancelExitTimers();
+    }
     if (oldWidget.replay != widget.replay ||
         oldWidget.settings.display != widget.settings.display)
       _engine.replay();
+    _syncTicker();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _cancelExitTimers();
     _ticker.dispose();
     _engine.dispose();
     super.dispose();
   }
 
+  void _cancelExitTimer(String identity) {
+    final pending = _exitTimers.remove(identity);
+    if (pending == null) return;
+    pending.$1.cancel();
+    if (!pending.$2.isCompleted) pending.$2.complete();
+  }
+
+  void _cancelExitTimers() {
+    for (final identity in _exitTimers.keys.toList()) {
+      _cancelExitTimer(identity);
+    }
+  }
+
   Future<void> _finish(TaskOccurrence item) async {
-    if (_finishing.contains(item.identity)) return;
-    setState(() => _finishing.add(item.identity));
-    if (!widget.settings.reduceMotion &&
-        !MediaQuery.disableAnimationsOf(context))
-      await Future<void>.delayed(const Duration(milliseconds: 180));
+    if (_pending.contains(item.identity)) return;
+    final duration = _motionDuration;
+    setState(() {
+      _pending.add(item.identity);
+      if (duration != Duration.zero) {
+        _finishing.add(item.identity);
+        final index = widget.items.indexWhere(
+          (value) => value.identity == item.identity,
+        );
+        _departing[item.identity] = (item, index < 0 ? 0 : index);
+      }
+    });
+    // Save immediately. Retain only the visual until its short exit finishes.
+    // A failed save restores the same task and never leaves an invisible tile.
+    Future<void> animation = Future.value();
+    if (duration != Duration.zero) {
+      final ready = Completer<void>();
+      final timer = Timer(duration, () {
+        _exitTimers.remove(item.identity);
+        ready.complete();
+      });
+      _exitTimers[item.identity] = (timer, ready);
+      animation = ready.future;
+    }
     try {
       await widget.onComplete(item);
+      await animation;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(const SnackBar(content: Text('没有完成保存，这件小事仍在原处，请重试。')));
+      }
     } finally {
-      if (mounted) setState(() => _finishing.remove(item.identity));
+      _cancelExitTimer(item.identity);
+      if (mounted)
+        setState(() {
+          _pending.remove(item.identity);
+          _finishing.remove(item.identity);
+          _departing.remove(item.identity);
+        });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.items.isEmpty)
+    final displayItems = _displayItems;
+    if (displayItems.isEmpty) {
+      if (_ticker.isActive) _ticker.stop();
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 108,
-              height: 108,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                color: Color(0xffebe3f8),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 108,
+                height: 108,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Color(0xffebe3f8),
+                ),
+                child: const Icon(
+                  Icons.auto_awesome_outlined,
+                  size: 45,
+                  color: Color(0xff8c73ae),
+                ),
               ),
-              child: const Icon(
-                Icons.auto_awesome_outlined,
-                size: 45,
-                color: Color(0xff8c73ae),
+              const SizedBox(height: 22),
+              const Text(
+                '留一点空白，也很好。',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
               ),
-            ),
-            const SizedBox(height: 22),
-            const Text(
-              '留一点空白，也很好。',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '写下一件小事，让它轻轻飘进来。',
-              style: TextStyle(color: Color(0xff817988)),
-            ),
-          ],
+              const SizedBox(height: 8),
+              const Text(
+                '写下一件小事，让它轻轻飘进来。',
+                style: TextStyle(color: Color(0xff817988)),
+              ),
+            ],
+          ),
         ),
       );
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final count = constraints.maxHeight < 310 ? 4 : 6;
+        final largeText = MediaQuery.textScalerOf(context).scale(16) > 22;
+        final count = largeText
+            ? 2
+            : constraints.maxHeight < 310
+            ? 4
+            : 6;
         _pageSize = count;
-        final pages = (widget.items.length / count).ceil();
+        final pages = (displayItems.length / count).ceil();
+        if (widget.settings.display == DisplayMode.cards &&
+            _cardIdentity != null) {
+          final selected = displayItems.indexWhere(
+            (item) => item.identity == _cardIdentity,
+          );
+          if (selected >= 0) {
+            _page = selected ~/ count;
+            _cardCursor = selected % count;
+          }
+        }
         _page = _page.clamp(0, pages - 1);
-        final items = widget.items.skip(_page * count).take(count).toList();
+        final items = displayItems.skip(_page * count).take(count).toList();
         return Column(
           children: [
             Expanded(
@@ -168,9 +288,9 @@ class _TaskStageState extends State<TaskStage>
                 DisplayMode.cards => _cards(items),
               },
             ),
-            if (pages > 1)
+            if (pages > 1 || widget.settings.display != DisplayMode.cards)
               SizedBox(
-                height: 36,
+                height: 44,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -179,16 +299,33 @@ class _TaskStageState extends State<TaskStage>
                       padding: EdgeInsets.zero,
                       onPressed: _page == 0
                           ? null
-                          : () => setState(() => _page--),
+                          : () => setState(() {
+                              _page--;
+                              _cardIdentity = null;
+                            }),
                       icon: const Icon(Icons.chevron_left),
                     ),
-                    Text('${_page + 1} / $pages · 共 ${widget.items.length} 件'),
+                    Flexible(
+                      child: TextButton(
+                        onPressed: _cardOverview,
+                        child: Text(
+                          pages > 1
+                              ? '${_page + 1} / $pages · 共 ${widget.items.length} 件'
+                              : '看看全部 ${widget.items.length} 件小事',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
                     IconButton(
                       tooltip: '下一组',
                       padding: EdgeInsets.zero,
                       onPressed: _page == pages - 1
                           ? null
-                          : () => setState(() => _page++),
+                          : () => setState(() {
+                              _page++;
+                              _cardIdentity = null;
+                            }),
                       icon: const Icon(Icons.chevron_right),
                     ),
                   ],
@@ -202,6 +339,7 @@ class _TaskStageState extends State<TaskStage>
 
   Widget _bubbles(List<TaskOccurrence> items) => LayoutBuilder(
     builder: (context, box) {
+      final largeText = MediaQuery.textScalerOf(context).scale(16) > 22;
       _engine.configure(
         items,
         Size(box.maxWidth, box.maxHeight),
@@ -209,14 +347,9 @@ class _TaskStageState extends State<TaskStage>
         widget.settings.paused ||
             widget.settings.reduceMotion ||
             MediaQuery.disableAnimationsOf(context),
+        capacity: _pageSize,
       );
-      if (!_engine.paused &&
-          (widget.settings.motion != MotionMode.opening ||
-              _engine.elapsed < 6.5) &&
-          !_ticker.isActive) {
-        _last = null;
-        _ticker.start();
-      }
+      _syncTicker();
       return ClipRect(
         child: Flow(
           delegate: _BubbleFlow(_engine),
@@ -224,97 +357,111 @@ class _TaskStageState extends State<TaskStage>
             final item = items[index], body = _engine.bodies[index];
             final color = taskColor(item.task.id);
             return MouseRegion(
-              onEnter: (_) => _engine.hold(index, 'hover', true),
-              onExit: (_) => _engine.hold(index, 'hover', false),
+              key: ValueKey('bubble-${item.identity}'),
+              onEnter: (_) => _hold(item.identity, 'hover', true),
+              onExit: (_) => _hold(item.identity, 'hover', false),
               child: Listener(
-                onPointerDown: (_) => _engine.hold(index, 'press', true),
-                onPointerUp: (_) => _engine.hold(index, 'press', false),
-                onPointerCancel: (_) => _engine.hold(index, 'press', false),
+                onPointerDown: (_) => _hold(item.identity, 'press', true),
+                onPointerUp: (_) => _hold(item.identity, 'press', false),
+                onPointerCancel: (_) => _hold(item.identity, 'press', false),
                 child: Focus(
-                  onFocusChange: (value) => _engine.hold(index, 'focus', value),
-                  child: AnimatedScale(
-                    scale: _finishing.contains(item.identity) ? .05 : 1,
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeInBack,
-                    child: SizedBox(
-                      width: body.radius * 2,
-                      height: body.radius * 2,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(
-                            center: const Alignment(-.4, -.5),
-                            colors: [
-                              Color.lerp(color, Colors.white, .5)!,
-                              color,
-                            ],
+                  canRequestFocus: false,
+                  onFocusChange: (value) =>
+                      _hold(item.identity, 'focus', value),
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(
+                      end: _finishing.contains(item.identity) ? 1 : 0,
+                    ),
+                    duration: _motionDuration,
+                    builder: (context, progress, child) => CustomPaint(
+                      foregroundPainter: BubbleBurst(
+                        color: color,
+                        progress: progress,
+                      ),
+                      child: Opacity(opacity: 1 - progress, child: child),
+                    ),
+                    child: AnimatedScale(
+                      scale: _finishing.contains(item.identity) ? .05 : 1,
+                      duration: _motionDuration,
+                      curve: Curves.easeInBack,
+                      child: SizedBox(
+                        width: body.radius * 2,
+                        height: body.radius * 2,
+                        child: CustomPaint(
+                          painter: BubbleSurface(
+                            engine: _engine,
+                            body: body,
+                            color: color,
                           ),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: .9),
-                            width: 1.5,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: color.withValues(alpha: .38),
-                              blurRadius: 14,
-                              offset: const Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        child: Material(
-                          color: Colors.transparent,
-                          shape: const CircleBorder(),
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => _finish(item),
-                            onLongPress: () => widget.onEdit(item.task),
-                            customBorder: const CircleBorder(),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 9,
-                              ),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Flexible(
-                                    child: Text(
-                                      item.task.title,
-                                      textAlign: TextAlign.center,
-                                      maxLines: 3,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: (body.radius * .21).clamp(
-                                          13,
-                                          18,
+                          child: Material(
+                            color: Colors.transparent,
+                            shape: const CircleBorder(),
+                            clipBehavior: Clip.antiAlias,
+                            child: Tooltip(
+                              message:
+                                  '${item.task.title}\n${priorityCaption(item.task)}',
+                              triggerMode: TooltipTriggerMode.manual,
+                              child: InkWell(
+                                onTap: _pending.contains(item.identity)
+                                    ? null
+                                    : () => _finish(item),
+                                onLongPress: () => widget.onEdit(item.task),
+                                customBorder: const CircleBorder(),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 9,
+                                  ),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          item.task.title,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: (body.radius * .21).clamp(
+                                              13,
+                                              18,
+                                            ),
+                                            fontWeight: FontWeight.w500,
+                                            color: const Color(0xff493c55),
+                                            height: 1.25,
+                                          ),
                                         ),
-                                        fontWeight: FontWeight.w600,
-                                        height: 1.25,
                                       ),
-                                    ),
-                                  ),
-                                  if (body.radius > 57 &&
-                                      occurrenceCaption(item).isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 5),
-                                      child: Text(
-                                        occurrenceCaption(item),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 10),
+                                      if (!largeText &&
+                                          body.radius > 57 &&
+                                          occurrenceCaption(item).isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 5,
+                                          ),
+                                          child: Text(
+                                            occurrenceCaption(item),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                        ),
+                                      SizedBox(
+                                        height: 30,
+                                        child: IconButton(
+                                          tooltip: '编辑 ${item.task.title}',
+                                          padding: EdgeInsets.zero,
+                                          iconSize: 15,
+                                          onPressed: () =>
+                                              widget.onEdit(item.task),
+                                          icon: const Icon(Icons.edit_outlined),
+                                        ),
                                       ),
-                                    ),
-                                  SizedBox(
-                                    height: 30,
-                                    child: IconButton(
-                                      tooltip: '编辑 ${item.task.title}',
-                                      padding: EdgeInsets.zero,
-                                      iconSize: 15,
-                                      onPressed: () => widget.onEdit(item.task),
-                                      icon: const Icon(Icons.edit_outlined),
-                                    ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
@@ -342,13 +489,14 @@ class _TaskStageState extends State<TaskStage>
     itemBuilder: (context, index) {
       final item = items[index];
       return AnimatedSlide(
+        key: ValueKey('paper-${item.identity}'),
         offset: _finishing.contains(item.identity)
             ? const Offset(0, 1)
             : Offset.zero,
-        duration: const Duration(milliseconds: 180),
+        duration: _motionDuration,
         child: AnimatedScale(
           scale: _finishing.contains(item.identity) ? .1 : 1,
-          duration: const Duration(milliseconds: 180),
+          duration: _motionDuration,
           child: Transform.rotate(
             angle: (index.isEven ? -.025 : .025),
             child: Container(
@@ -394,7 +542,9 @@ class _TaskStageState extends State<TaskStage>
                       const Spacer(),
                       IconButton.filledTonal(
                         tooltip: '收进口袋',
-                        onPressed: () => _finish(item),
+                        onPressed: _pending.contains(item.identity)
+                            ? null
+                            : () => _finish(item),
                         icon: const Icon(Icons.check, size: 18),
                       ),
                     ],
@@ -411,6 +561,9 @@ class _TaskStageState extends State<TaskStage>
     builder: (context, box) {
       _cardCursor = _cardCursor.clamp(0, items.length - 1);
       final item = items[_cardCursor];
+      // Indexes can move while another card finishes saving, or when a task
+      // is inserted/reordered. Keep the user's chosen card until it disappears.
+      _cardIdentity = item.identity;
       final height = box.maxHeight < 420 ? 420.0 : box.maxHeight;
       return SingleChildScrollView(
         child: SizedBox(
@@ -454,7 +607,12 @@ class _TaskStageState extends State<TaskStage>
                       ),
                       Dismissible(
                         key: ValueKey(item.identity),
-                        direction: DismissDirection.startToEnd,
+                        direction: _pending.contains(item.identity)
+                            ? DismissDirection.none
+                            : DismissDirection.startToEnd,
+                        movementDuration: _reduceMotion
+                            ? Duration.zero
+                            : const Duration(milliseconds: 180),
                         confirmDismiss: (_) async {
                           await _finish(item);
                           return false;
@@ -463,7 +621,7 @@ class _TaskStageState extends State<TaskStage>
                           offset: _finishing.contains(item.identity)
                               ? const Offset(1.2, -.08)
                               : Offset.zero,
-                          duration: const Duration(milliseconds: 180),
+                          duration: _motionDuration,
                           child: Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(20),
@@ -485,7 +643,7 @@ class _TaskStageState extends State<TaskStage>
                                 Row(
                                   children: [
                                     Text(
-                                      '${_page * _pageSize + _cardCursor + 1} / ${widget.items.length}',
+                                      '${_page * _pageSize + _cardCursor + 1} / ${_displayItems.length}',
                                       style: const TextStyle(fontSize: 12),
                                     ),
                                     const Spacer(),
@@ -523,7 +681,7 @@ class _TaskStageState extends State<TaskStage>
                                     ),
                                   ),
                                 Text(
-                                  '重要 ${['低', '中', '高'][item.task.importance - 1]} · 紧急 ${['低', '中', '高'][item.task.urgency - 1]}',
+                                  priorityCaption(item.task),
                                   style: const TextStyle(
                                     fontSize: 11,
                                     color: Color(0xff756781),
@@ -533,7 +691,9 @@ class _TaskStageState extends State<TaskStage>
                                 SizedBox(
                                   width: double.infinity,
                                   child: FilledButton.icon(
-                                    onPressed: () => _finish(item),
+                                    onPressed: _pending.contains(item.identity)
+                                        ? null
+                                        : () => _finish(item),
                                     icon: const Icon(Icons.check),
                                     label: const Text('完成，划走'),
                                   ),
@@ -556,10 +716,10 @@ class _TaskStageState extends State<TaskStage>
                     TextButton.icon(
                       onPressed: items.length < 2
                           ? null
-                          : () => setState(
-                              () => _cardCursor =
-                                  (_cardCursor + 1) % items.length,
-                            ),
+                          : () => setState(() {
+                              _cardCursor = (_cardCursor + 1) % items.length;
+                              _cardIdentity = items[_cardCursor].identity;
+                            }),
                       icon: const Icon(Icons.shuffle, size: 18),
                       label: const Text('换一件'),
                     ),
@@ -578,30 +738,110 @@ class _TaskStageState extends State<TaskStage>
     },
   );
   Future<void> _cardOverview() async {
-    final selected = await showModalBottomSheet<int>(
+    final selected = await showModalBottomSheet<({String identity, bool edit})>(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: ListView.builder(
-          itemCount: widget.items.length,
-          itemBuilder: (context, index) => ListTile(
-            leading: Icon(
-              Icons.circle,
-              color: taskColor(widget.items[index].task.id),
-              size: 16,
-            ),
-            title: Text(widget.items[index].task.title),
-            subtitle: Text(occurrenceCaption(widget.items[index])),
-            onTap: () => Navigator.pop(context, index),
+      isScrollControlled: true,
+      builder: (context) => _TaskOverview(items: widget.items),
+    );
+    if (selected == null || !mounted) return;
+    final index = widget.items.indexWhere(
+      (item) => item.identity == selected.identity,
+    );
+    if (index < 0) return;
+    if (selected.edit) {
+      widget.onEdit(widget.items[index].task);
+    } else {
+      setState(() {
+        _page = index ~/ _pageSize;
+        _cardCursor = index % _pageSize;
+        _cardIdentity = selected.identity;
+      });
+    }
+  }
+}
+
+class _TaskOverview extends StatefulWidget {
+  const _TaskOverview({required this.items});
+  final List<TaskOccurrence> items;
+  @override
+  State<_TaskOverview> createState() => _TaskOverviewState();
+}
+
+class _TaskOverviewState extends State<_TaskOverview> {
+  String _query = '';
+  @override
+  Widget build(BuildContext context) {
+    final matching = widget.items
+        .where(
+          (item) => item.task.title.toLowerCase().contains(
+            _query.trim().toLowerCase(),
+          ),
+        )
+        .toList();
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .68,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 8,
+                ),
+                child: TextField(
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: '找一件小事',
+                  ),
+                  onChanged: (value) => setState(() => _query = value),
+                ),
+              ),
+              Expanded(
+                child: matching.isEmpty
+                    ? const Center(child: Text('还没找到，换个词试试。'))
+                    : ListView.builder(
+                        itemCount: matching.length,
+                        itemBuilder: (context, index) {
+                          final item = matching[index];
+                          return ListTile(
+                            leading: Icon(
+                              Icons.circle,
+                              color: taskColor(item.task.id),
+                              size: 16,
+                            ),
+                            title: Text(item.task.title),
+                            subtitle: Text(
+                              [
+                                occurrenceCaption(item),
+                                priorityCaption(item.task),
+                              ].where((text) => text.isNotEmpty).join('\n'),
+                            ),
+                            trailing: IconButton(
+                              tooltip: '编辑 ${item.task.title}',
+                              icon: const Icon(Icons.edit_outlined),
+                              onPressed: () => Navigator.pop(context, (
+                                identity: item.identity,
+                                edit: true,
+                              )),
+                            ),
+                            onTap: () => Navigator.pop(context, (
+                              identity: item.identity,
+                              edit: false,
+                            )),
+                          );
+                        },
+                      ),
+              ),
+            ],
           ),
         ),
       ),
     );
-    if (selected != null && mounted)
-      setState(() {
-        _page = selected ~/ _pageSize;
-        _cardCursor = selected % _pageSize;
-      });
   }
 }
 

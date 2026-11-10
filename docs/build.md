@@ -37,6 +37,38 @@ cd android
 
 打包附带 Visual Studio 可再分发目录中的 x64 CRT DLL。Flutter 依赖许可保留在 `data/flutter_assets/NOTICES.Z`。
 
+## 候选版版本和统一回归
+
+发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.3+5`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
+
+当前模型使用与输入框一致的 `characters` 字符计数。在项目根目录单独编译模型基准时，要提供应用包配置：`dart compile exe --packages=src/small_orbit/.dart_tool/package_config.json scripts/benchmark_model.dart -o .build_cache/benchmark_model`。此前已保存的基线/优化样本源文件不变，旧测量仍按当时源码复现。
+
+Android 构建同时输出通用包与 `android-arm64.apk`。`android/gradle.properties` 使用固定 Flutter 插件支持的 `force-version-code-ignoring-abi=true`，两者都沿用 pubspec 的版本代码，避免 ARM64 默认附加2000后阻碍切回通用包。验证脚本检查每个包的签名、版本、ABI、权限、CRC和对齐，并对比0.1.0签名。
+
+```bash
+bash /home/wzh/my_code/todo_list/scripts/verify_shared.sh
+```
+
+此命令顺序执行静态分析、全部 Flutter 测试与 Android JVM 单测，任一步失败即停止；日志归档至远端 `logs/<版本>/`。发布构建仍使用前面的两端命令。Windows 包可做独立轻量校验（需要 Python 3）：
+
+```powershell
+python scripts/verify_windows.py
+```
+
+Windows 原生窗口测试使用已有 MSVC/SDK，仅创建自己的隐藏测试窗口：
+
+```powershell
+./src/small_orbit/test/native/run_window_placement_test.ps1
+```
+
+发布版启动/资源探针需要 PowerShell 7；先关闭正在运行的小事星球，再执行：
+
+```powershell
+./scripts/benchmark_windows.ps1
+```
+
+探针生成0/100/1000任务的独立 `.qa_data` 目录，隐藏启动各3次，首帧后采样CPU/工作集，并通过应用自身退出握手结束。仅在 `SMALL_ORBIT_DIAGNOSTICS=1` 且指定独立数据目录时启用；普通启动不写诊断也不会自动退出。日志 `logs/windows_probe_<版本>.json`。这是本机Windows专有验证，不替代可见交互/手机耗电测试。
+
 ## 验证
 
 Flutter 测试覆盖日历、文件校验、中断恢复、导入备份、跨模式完成与撤销、牌堆操作、泡泡边界和 320/390/480 宽度布局。Android 另有 5 项原生日历调度测试。`ORBIT_PREVIEW_DIR` 可让布局测试输出 PNG；截图模式使用远端预装中文字体，不把字体打进应用。实际结果和未覆盖范围见 `validation.md`。

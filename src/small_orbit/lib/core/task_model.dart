@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:characters/characters.dart';
 
 enum DisplayMode { bubbles, papers, cards }
 
@@ -11,13 +12,30 @@ DateTime dateOnly(DateTime value) =>
 String dayKey(DateTime value) =>
     '${value.year.toString().padLeft(4, '0')}-'
     '${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
-DateTime parseDay(String value) {
-  if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) {
+final _dayPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+
+List<int> _dayParts(String value) {
+  if (!_dayPattern.hasMatch(value)) {
     throw const FormatException('日期格式无效');
   }
   final parts = value.split('-').map(int.parse).toList();
+  final year = parts[0], month = parts[1], day = parts[2];
+  if (year < 2000 || year > 2200 || month < 1 || month > 12) {
+    throw const FormatException('日期超出有效范围');
+  }
+  final leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  final maximumDay = month == 2 && leap ? 29 : daysInMonth[month - 1];
+  if (day < 1 || day > maximumDay) {
+    throw const FormatException('日期超出有效范围');
+  }
+  return parts;
+}
+
+DateTime parseDay(String value) {
+  final parts = _dayParts(value);
   final result = DateTime(parts[0], parts[1], parts[2]);
-  if (parts[0] < 2000 || parts[0] > 2200 || dayKey(result) != value) {
+  if (dayKey(result) != value) {
     throw const FormatException('日期超出有效范围');
   }
   return result;
@@ -131,6 +149,10 @@ class OrbitTask {
   /// A null value is a missed occurrence; an ISO timestamp is a completion.
   final Map<String, String?> records;
 
+  // An in-memory coverage marker for this immutable history. It is never
+  // serialized: imported or edited histories are checked before being cached.
+  DateTime? _materializedBefore;
+
   OrbitTask copyWith({
     String? title,
     DateTime? date,
@@ -141,19 +163,27 @@ class OrbitTask {
     int? importance,
     int? urgency,
     Map<String, String?>? records,
-  }) => OrbitTask(
-    id: id,
-    title: title ?? this.title,
-    createdAt: createdAt,
-    date: clearDate ? null : date ?? this.date,
-    reminderMinute: clearReminder
-        ? null
-        : reminderMinute ?? this.reminderMinute,
-    repeat: repeat ?? this.repeat,
-    importance: importance ?? this.importance,
-    urgency: urgency ?? this.urgency,
-    records: records ?? this.records,
-  );
+  }) {
+    final result = OrbitTask(
+      id: id,
+      title: title ?? this.title,
+      createdAt: createdAt,
+      date: clearDate ? null : date ?? this.date,
+      reminderMinute: clearReminder
+          ? null
+          : reminderMinute ?? this.reminderMinute,
+      repeat: repeat ?? this.repeat,
+      importance: importance ?? this.importance,
+      urgency: urgency ?? this.urgency,
+      records: records ?? this.records,
+    );
+    if (result.date == this.date &&
+        result.repeat == this.repeat &&
+        (records == null || identical(records, this.records))) {
+      result._materializedBefore = _materializedBefore;
+    }
+    return result;
+  }
 
   int get intervalDays => repeat == RepeatKind.weekly ? 7 : 1;
   int get priority => importance + urgency;
@@ -194,16 +224,22 @@ class OrbitTask {
         dateOnly(now).isBefore(date!))
       return this;
     final period = periodAt(now)!;
+    final covered = _materializedBefore;
+    // Compare calendar components, so a timezone change cannot invalidate the
+    // coverage of the same date labels or truncate history after clock rollback.
+    if (covered != null && daysBetween(period, covered) >= 0) return this;
     Map<String, String?>? updated;
     for (
-      var day = date!;
+      var day = covered ?? date!;
       day.isBefore(period);
       day = addDays(day, intervalDays)
     ) {
       final key = dayKey(day);
       if (!records.containsKey(key)) (updated ??= Map.of(records))[key] = null;
     }
-    return updated == null ? this : copyWith(records: updated);
+    final result = updated == null ? this : copyWith(records: updated);
+    result._materializedBefore = period;
+    return result;
   }
 
   Map<String, Object?> toJson() => {
@@ -225,7 +261,7 @@ class OrbitTask {
     }
     if (json['title'] is! String ||
         (json['title'] as String).trim().isEmpty ||
-        (json['title'] as String).length > 240) {
+        (json['title'] as String).characters.length > 240) {
       throw const FormatException('任务标题无效或超过 240 字符');
     }
     for (final key in ['importance', 'urgency']) {
@@ -255,7 +291,10 @@ class OrbitTask {
     for (final entry in (json['records'] as Map).entries) {
       if (entry.key is! String) throw const FormatException('历史日期无效');
       final key = entry.key as String;
-      if (key != 'once') parseDay(key);
+      // History keys are calendar labels, not instants in the current timezone.
+      // Validate their Gregorian date without constructing thousands of local
+      // DateTimes. Actual task dates are still converted through parseDay above.
+      if (key != 'once') _dayParts(key);
       if (entry.value != null &&
           (entry.value is! String ||
               DateTime.tryParse(entry.value as String) == null)) {
@@ -319,11 +358,14 @@ class OrbitDocument {
       );
 
   OrbitDocument materialize(DateTime now) {
-    final updated = tasks.map((task) => task.materializeMissed(now)).toList();
+    List<OrbitTask>? updated;
     for (var i = 0; i < tasks.length; i++) {
-      if (!identical(tasks[i], updated[i])) return copyWith(tasks: updated);
+      final task = tasks[i].materializeMissed(now);
+      if (!identical(tasks[i], task)) {
+        (updated ??= tasks.toList())[i] = task;
+      }
     }
-    return this;
+    return updated == null ? this : copyWith(tasks: updated);
   }
 
   List<TaskOccurrence> active(DateTime now, {bool todayOnly = true}) {
@@ -343,8 +385,16 @@ class OrbitDocument {
 
   List<HistoryEntry> history(DateTime now, {int days = 30}) {
     final first = addDays(dateOnly(now), -days + 1), result = <HistoryEntry>[];
+    final firstKey = dayKey(first), lastKey = dayKey(now);
     for (final task in tasks) {
       for (final entry in task.records.entries) {
+        // Validated YYYY-MM-DD keys sort in calendar order. Avoid parsing
+        // timestamps and constructing local dates for history outside the view.
+        if (entry.key != 'once' &&
+            (entry.key.compareTo(firstKey) < 0 ||
+                entry.key.compareTo(lastKey) > 0)) {
+          continue;
+        }
         final completedAt = entry.value == null
             ? null
             : DateTime.parse(entry.value!).toLocal();

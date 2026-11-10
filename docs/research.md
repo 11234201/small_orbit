@@ -86,3 +86,18 @@ Flutter 官方提供 Windows 原生接口接入和分发指导；仍需按选定
 ## 6. 调研限制
 
 未测量任何方案的包体、内存或速度；提醒功能、Windows 小窗口、导入整份恢复及漏做不堆积均已确认。目标设备、提醒边界和交互细节仍待明确。当前资料足以讨论产品方向，不足以作出量化性能承诺或最终技术选型。
+## 0.1.1 可靠性补充核对（2026-11-10）
+
+Android 官方说明通知渠道可被用户独立关闭，可读取渠道 importance 并跳转至指定渠道设置；Flutter 的生命周期观察接口会通知应用进入后台和返回前台。本轮据此增加渠道状态显示及返回前台刷新，并用模拟平台调用验证界面和重试流程；实际厂商送达条件仍是待验证事项。
+
+来源：[Android 通知渠道](https://developer.android.com/develop/ui/compose/notifications/channels)、[Flutter 生命周期观察接口](https://api.flutter.dev/flutter/widgets/WidgetsBindingObserver/didChangeAppLifecycleState.html)。
+
+## 1.0 Windows 窗口与测量依据（2026-11-10）
+
+窗口位置实现保存正常窗口的屏幕坐标，避免将 WINDOWPLACEMENT 的工作区坐标误当屏幕坐标；DPI改变采用系统建议矩形，并钳制到最近显示器工作区。依据：[WINDOWPLACEMENT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-windowplacement)、[WM_DPICHANGED](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged)、[MonitorFromRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-monitorfromrect)。
+
+实际Windows发布版探针发现初始隐藏状态未让Flutter自动停动画，因此增加原生窗口可见性桥接。这是根据本机测量作出的修复，不把官方生命周期文档推断为所有平台事件均已送达。前后测量与边界见 [性能记录](performance.md)。
+
+## 代码审查：Android 持久化失败（2026-11-10）
+
+`SharedPreferences.Editor.commit()` 的布尔结果代表持久存储写入是否成功；AOSP 实现先更新内存，再等待磁盘结果。因此重读偏好中的新值不能证明先前写入已经成功。本轮提醒回执保留独立脏状态，配置更新保留原始任务快照，在实际提交成功后协调通知。依据：[Android commit API](https://developer.android.com/reference/android/content/SharedPreferences.Editor#commit())、[AOSP SharedPreferencesImpl](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/app/SharedPreferencesImpl.java)。
