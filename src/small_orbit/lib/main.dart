@@ -269,31 +269,44 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-              child: Text(
-                task.title,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * .72,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    task.title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('编辑这件小事'),
-              onTap: () => Navigator.pop(context, 'edit'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: Text(task.repeat == RepeatKind.none ? '删除任务' : '删除整个重复任务'),
-              onTap: () => Navigator.pop(context, 'delete'),
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('编辑这件小事'),
+                onTap: () => Navigator.pop(context, 'edit'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: Text(
+                  task.repeat == RepeatKind.none ? '删除任务' : '删除整个重复任务',
+                ),
+                onTap: () => Navigator.pop(context, 'delete'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -530,27 +543,52 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                             showCheckmark: false,
                             onSelected: (_) => setState(() => _today = false),
                           ),
-                          const Spacer(),
-                          DropdownButtonHideUnderline(
-                            child: DropdownButton<DisplayMode>(
-                              value: settings.display,
-                              items: const [
-                                DropdownMenuItem(
-                                  value: DisplayMode.bubbles,
-                                  child: Text('◌  泡泡'),
-                                ),
-                                DropdownMenuItem(
-                                  value: DisplayMode.papers,
-                                  child: Text('▱  纸片'),
-                                ),
-                                DropdownMenuItem(
-                                  value: DisplayMode.cards,
-                                  child: Text('▣  卡牌'),
-                                ),
-                              ],
-                              onChanged: (value) => _safe(
-                                () => controller.updateSettings(
-                                  (current) => current.copyWith(display: value),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: SizedBox(
+                                width:
+                                    MediaQuery.textScalerOf(context).scale(70) +
+                                    24,
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<DisplayMode>(
+                                    value: settings.display,
+                                    isExpanded: true,
+                                    alignment: AlignmentDirectional.centerEnd,
+                                    items: const [
+                                      DropdownMenuItem(
+                                        value: DisplayMode.bubbles,
+                                        child: Text(
+                                          '◌  泡泡',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      DropdownMenuItem(
+                                        value: DisplayMode.papers,
+                                        child: Text(
+                                          '▱  纸片',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      DropdownMenuItem(
+                                        value: DisplayMode.cards,
+                                        child: Text(
+                                          '▣  卡牌',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (value) => _safe(
+                                      () => controller.updateSettings(
+                                        (current) =>
+                                            current.copyWith(display: value),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -560,38 +598,64 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                       if (settings.display == DisplayMode.bubbles)
                         Row(
                           children: [
-                            DropdownButtonHideUnderline(
-                              child: DropdownButton<MotionMode>(
-                                value: settings.motion,
-                                isDense: true,
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      fontSize: 12,
-                                      color: const Color(0xff777180),
+                            Expanded(
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: SizedBox(
+                                  width:
+                                      MediaQuery.textScalerOf(
+                                        context,
+                                      ).scale(144) +
+                                      24,
+                                  child: DropdownButtonHideUnderline(
+                                    child: DropdownButton<MotionMode>(
+                                      value: settings.motion,
+                                      isDense: true,
+                                      isExpanded: true,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            fontSize: 12,
+                                            color: const Color(0xff777180),
+                                          ),
+                                      items: const [
+                                        DropdownMenuItem(
+                                          value: MotionMode.opening,
+                                          child: Text(
+                                            '开场弹跳 → 慢慢安静',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: MotionMode.gentle,
+                                          child: Text(
+                                            '一直轻轻漂浮',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: MotionMode.lively,
+                                          child: Text(
+                                            '一直活泼弹跳',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                      onChanged: (value) => _safe(
+                                        () => controller.updateSettings(
+                                          (current) =>
+                                              current.copyWith(motion: value),
+                                        ),
+                                      ),
                                     ),
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: MotionMode.opening,
-                                    child: Text('开场弹跳 → 慢慢安静'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: MotionMode.gentle,
-                                    child: Text('一直轻轻漂浮'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: MotionMode.lively,
-                                    child: Text('一直活泼弹跳'),
-                                  ),
-                                ],
-                                onChanged: (value) => _safe(
-                                  () => controller.updateSettings(
-                                    (current) =>
-                                        current.copyWith(motion: value),
                                   ),
                                 ),
                               ),
                             ),
-                            const Spacer(),
                             IconButton(
                               tooltip: '再弹一次',
                               visualDensity: VisualDensity.compact,

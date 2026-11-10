@@ -1,5 +1,30 @@
 # 验证记录
 
+## 1.0.0-rc.5+7：2026-11-10，失焦持续运动与长标题
+
+按用户要求先保存Git基线 `dbf6708`，再处理窗口放在旁边时停动画和长标题拥挤。保持任务格式1和Android签名。
+
+### 修复与证据
+
+- **失焦动画**：旧代码只允许resumed，导致仍可见的inactive窗口停止。4项旧代码回归失败，修复后全部通过；现在inactive继续运动，悬停/逻辑键盘焦点仅在活动窗口固定泡泡，返回后恢复固定。hidden、paused、原生TickerMode、手动暂停及减少动态继续停帧。日志 `ambient_before.log`、`ambient_after.log`。
+- **长标题**：泡泡最多两行省略，基础字号15并尊重系统字号；只整理显示中的空白，不删改原文。悬停600毫秒显示全文，失焦时关闭提示。普通/大字号布局、原文进入编辑、触摸长按和悬停回归通过。
+- **全文入口**：实际主页菜单在长标题/320宽/1.8倍文字下纵向溢出，两个下拉选择器横向溢出47/62像素。菜单改为受限高度的滚动正文、保留编辑/删除按钮；下拉框受可用宽度约束。旧菜单失败与修复后成功日志为 `ambient_menu_before.log`、`ambient_menu_after.log`。
+- 最终静态分析无问题，**109项Flutter测试全部通过**，其中新增10项。日志 `ambient_analyze.log`、`ambient_full.log`。320/390/480宽三模式布局检查通过，已检查实际长标题渲染截图，见 `docs/preview/long_titles/`；渲染用服务器字体和示例任务，不是真机截屏。
+- Windows Release产品版本 `1.0.0-rc.5+7`，ZIP完整性、AOT/引擎/资源/VC++运行库和说明检查通过。本轮没有执行原生切应用的GUI自动化，也未重复未改动的原生单测；失焦/隐藏切换证据来自Flutter生命周期和可见性门控回归。
+- Android通用/ARM64签名、CRC、SDK、ABI、release模式、离线权限和16KB对齐通过；versionName为1.0.0-rc.5、versionCode为7，与0.1.0签名一致。100项源码/脚本指纹在本地与服务器一致。
+
+### 交付文件
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `small_orbit-1.0.0-rc.5-windows-x64.zip` | 13,363,142 | `00348a80f34fb155cf7a40cce566cb9483fed29a3ccf49cbf758dd01ec184d1c` |
+| `small_orbit-1.0.0-rc.5-android.apk` | 55,017,433 | `c831bdf75f45cbefe1f89942eb8b9264008c41d723a3c1a29ce2424d10b4d3de` |
+| `small_orbit-1.0.0-rc.5-android-arm64.apk` | 19,151,902 | `8ea43fdcc863cf2d046d83ed07739f20a7410e8d17370127cfc28a2b8f08b706` |
+
+对应包和源码指纹位于 `dist/SHA256SUMS-1.0.0-rc.5.txt` 与 `SOURCE_SHA256-1.0.0-rc.5.txt`。本机日志 `windows_ambient_rc5_build.log`、`windows_ambient_rc5_package.log`；远端 `ambient_android_verification.log`、`ambient_source_parity.log`。以前的设备通知送达、Windows 11/多屏和连续使用验收边界不变，没有新增帧率或耗电结论。
+
+持续摆放请选“一直轻轻漂浮”或“一直活泼弹跳”；开场模式仍会停止。Windows升级先从托盘退出旧程序，再打开新目录，避免单实例机制唤起旧版本。
+
 ## 1.0.0-rc.4+6：2026-11-10，泡泡视觉与运动
 
 本轮针对上手反馈改动泡泡绘制、物理和完成反馈。重要/紧急大小规则、离线数据和三种运动选项保留；数据格式仍为1。

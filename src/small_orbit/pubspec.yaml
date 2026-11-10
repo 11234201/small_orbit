@@ -1,7 +1,7 @@
 name: small_orbit
 description: 小事星球，轻松完成每一件小事的离线待办。
 publish_to: none
-version: 1.0.0-rc.4+6
+version: 1.0.0-rc.5+7
 environment:
   sdk: '>=3.8.0 <4.0.0'
 dependencies:

@@ -66,6 +66,8 @@ class _TaskStageState extends State<TaskStage>
   late final Ticker _ticker;
   Duration? _last;
   bool _visible = true;
+  bool _interactive = true;
+  final Map<String, Set<String>> _interactionHolds = {};
   int _page = 0;
   int _cardCursor = 0;
   String? _cardIdentity;
@@ -92,9 +94,9 @@ class _TaskStageState extends State<TaskStage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _visible =
-        WidgetsBinding.instance.lifecycleState == null ||
-        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _visible = _canAnimate(lifecycle);
+    _interactive = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     _ticker = createTicker((time) {
       final delta = _last == null
           ? 0.0
@@ -105,6 +107,13 @@ class _TaskStageState extends State<TaskStage>
       _syncTicker();
     });
   }
+
+  // Inactive means visible without input focus (for example a side window).
+  // Native Windows visibility/TickerMode still gates minimized/tray windows.
+  bool _canAnimate(AppLifecycleState? state) =>
+      state == null ||
+      state == AppLifecycleState.resumed ||
+      state == AppLifecycleState.inactive;
 
   void _syncTicker() {
     final shouldRun =
@@ -123,14 +132,44 @@ class _TaskStageState extends State<TaskStage>
   }
 
   void _hold(String id, String reason, bool held) {
-    _engine.holdIdentity(id, reason, held);
+    if (held) {
+      (_interactionHolds[id] ??= {}).add(reason);
+    } else {
+      _interactionHolds[id]?.remove(reason);
+      if (_interactionHolds[id]?.isEmpty ?? false) _interactionHolds.remove(id);
+    }
+    _engine.holdIdentity(id, reason, held && _interactive);
     _syncTicker();
+  }
+
+  void _restoreInteractionHolds() {
+    final identities = _engine.bodies.map((body) => body.id).toSet();
+    _interactionHolds.removeWhere((id, _) => !identities.contains(id));
+    for (final body in _engine.bodies) {
+      body.holds.clear();
+      if (_interactive) body.holds.addAll(_interactionHolds[body.id] ?? {});
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _visible = state == AppLifecycleState.resumed;
-    _last = null;
+    final visible = _canAnimate(state);
+    final interactive = state == AppLifecycleState.resumed;
+    if (visible != _visible) _last = null;
+    _visible = visible;
+    if (interactive != _interactive) {
+      _interactive = interactive;
+      if (!interactive) {
+        // A press can be cancelled by switching apps. Logical keyboard focus
+        // survives that switch and is restored only when this window is active.
+        for (final holds in _interactionHolds.values) {
+          holds.remove('press');
+        }
+        Tooltip.dismissAllToolTips();
+      }
+      _restoreInteractionHolds();
+      setState(() {});
+    }
     _syncTicker();
   }
 
@@ -349,117 +388,129 @@ class _TaskStageState extends State<TaskStage>
             MediaQuery.disableAnimationsOf(context),
         capacity: _pageSize,
       );
+      _restoreInteractionHolds();
       _syncTicker();
-      return ClipRect(
-        child: Flow(
-          delegate: _BubbleFlow(_engine),
-          children: List.generate(items.length, (index) {
-            final item = items[index], body = _engine.bodies[index];
-            final color = taskColor(item.task.id);
-            return MouseRegion(
-              key: ValueKey('bubble-${item.identity}'),
-              onEnter: (_) => _hold(item.identity, 'hover', true),
-              onExit: (_) => _hold(item.identity, 'hover', false),
-              child: Listener(
-                onPointerDown: (_) => _hold(item.identity, 'press', true),
-                onPointerUp: (_) => _hold(item.identity, 'press', false),
-                onPointerCancel: (_) => _hold(item.identity, 'press', false),
-                child: Focus(
-                  canRequestFocus: false,
-                  onFocusChange: (value) =>
-                      _hold(item.identity, 'focus', value),
-                  child: TweenAnimationBuilder<double>(
-                    tween: Tween(
-                      end: _finishing.contains(item.identity) ? 1 : 0,
-                    ),
-                    duration: _motionDuration,
-                    builder: (context, progress, child) => CustomPaint(
-                      foregroundPainter: BubbleBurst(
-                        color: color,
-                        progress: progress,
+      return TooltipVisibility(
+        visible: _interactive,
+        child: ClipRect(
+          child: Flow(
+            delegate: _BubbleFlow(_engine),
+            children: List.generate(items.length, (index) {
+              final item = items[index], body = _engine.bodies[index];
+              final color = taskColor(item.task.id);
+              return MouseRegion(
+                key: ValueKey('bubble-${item.identity}'),
+                onEnter: (_) => _hold(item.identity, 'hover', true),
+                onExit: (_) => _hold(item.identity, 'hover', false),
+                child: Listener(
+                  onPointerDown: (_) => _hold(item.identity, 'press', true),
+                  onPointerUp: (_) => _hold(item.identity, 'press', false),
+                  onPointerCancel: (_) => _hold(item.identity, 'press', false),
+                  child: Focus(
+                    canRequestFocus: false,
+                    onFocusChange: (value) =>
+                        _hold(item.identity, 'focus', value),
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(
+                        end: _finishing.contains(item.identity) ? 1 : 0,
                       ),
-                      child: Opacity(opacity: 1 - progress, child: child),
-                    ),
-                    child: AnimatedScale(
-                      scale: _finishing.contains(item.identity) ? .05 : 1,
                       duration: _motionDuration,
-                      curve: Curves.easeInBack,
-                      child: SizedBox(
-                        width: body.radius * 2,
-                        height: body.radius * 2,
-                        child: CustomPaint(
-                          painter: BubbleSurface(
-                            engine: _engine,
-                            body: body,
-                            color: color,
-                          ),
-                          child: Material(
-                            color: Colors.transparent,
-                            shape: const CircleBorder(),
-                            clipBehavior: Clip.antiAlias,
-                            child: Tooltip(
-                              message:
-                                  '${item.task.title}\n${priorityCaption(item.task)}',
-                              triggerMode: TooltipTriggerMode.manual,
-                              child: InkWell(
-                                onTap: _pending.contains(item.identity)
-                                    ? null
-                                    : () => _finish(item),
-                                onLongPress: () => widget.onEdit(item.task),
-                                customBorder: const CircleBorder(),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 14,
-                                    vertical: 9,
-                                  ),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Flexible(
-                                        child: Text(
-                                          item.task.title,
-                                          textAlign: TextAlign.center,
-                                          maxLines: 3,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: (body.radius * .21).clamp(
-                                              13,
-                                              18,
-                                            ),
-                                            fontWeight: FontWeight.w500,
-                                            color: const Color(0xff493c55),
-                                            height: 1.25,
-                                          ),
-                                        ),
-                                      ),
-                                      if (!largeText &&
-                                          body.radius > 57 &&
-                                          occurrenceCaption(item).isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 5,
-                                          ),
+                      builder: (context, progress, child) => CustomPaint(
+                        foregroundPainter: BubbleBurst(
+                          color: color,
+                          progress: progress,
+                        ),
+                        child: Opacity(opacity: 1 - progress, child: child),
+                      ),
+                      child: AnimatedScale(
+                        scale: _finishing.contains(item.identity) ? .05 : 1,
+                        duration: _motionDuration,
+                        curve: Curves.easeInBack,
+                        child: SizedBox(
+                          width: body.radius * 2,
+                          height: body.radius * 2,
+                          child: CustomPaint(
+                            painter: BubbleSurface(
+                              engine: _engine,
+                              body: body,
+                              color: color,
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.antiAlias,
+                              child: Tooltip(
+                                message:
+                                    '${item.task.title}\n${priorityCaption(item.task)}',
+                                triggerMode: TooltipTriggerMode.manual,
+                                waitDuration: const Duration(milliseconds: 600),
+                                constraints: const BoxConstraints(
+                                  maxWidth: 280,
+                                ),
+                                child: InkWell(
+                                  onTap: _pending.contains(item.identity)
+                                      ? null
+                                      : () => _finish(item),
+                                  onLongPress: () => widget.onEdit(item.task),
+                                  customBorder: const CircleBorder(),
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: body.radius * .22,
+                                      vertical: body.radius * .16,
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Flexible(
                                           child: Text(
-                                            occurrenceCaption(item),
-                                            maxLines: 1,
+                                            item.task.title.replaceAll(
+                                              RegExp(r'\s+'),
+                                              ' ',
+                                            ),
+                                            semanticsLabel: item.task.title,
+                                            textAlign: TextAlign.center,
+                                            maxLines: 2,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              fontSize: 10,
+                                            style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w500,
+                                              color: const Color(0xff493c55),
+                                              height: 1.25,
                                             ),
                                           ),
                                         ),
-                                      SizedBox(
-                                        height: 30,
-                                        child: IconButton(
-                                          tooltip: '编辑 ${item.task.title}',
-                                          padding: EdgeInsets.zero,
-                                          iconSize: 15,
-                                          onPressed: () =>
-                                              widget.onEdit(item.task),
-                                          icon: const Icon(Icons.edit_outlined),
+                                        if (!largeText &&
+                                            body.radius > 66 &&
+                                            occurrenceCaption(item).isNotEmpty)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              top: 5,
+                                            ),
+                                            child: Text(
+                                              occurrenceCaption(item),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontSize: 10,
+                                              ),
+                                            ),
+                                          ),
+                                        SizedBox(
+                                          height: 24,
+                                          child: IconButton(
+                                            tooltip: '编辑 ${item.task.title}',
+                                            padding: EdgeInsets.zero,
+                                            iconSize: 15,
+                                            onPressed: () =>
+                                                widget.onEdit(item.task),
+                                            icon: const Icon(
+                                              Icons.edit_outlined,
+                                            ),
+                                          ),
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -470,9 +521,9 @@ class _TaskStageState extends State<TaskStage>
                     ),
                   ),
                 ),
-              ),
-            );
-          }),
+              );
+            }),
+          ),
         ),
       );
     },

@@ -52,14 +52,16 @@ void main() {
       });
       final controller = OrbitController(MemoryStore());
       await controller.initialize();
-      final titles = [
-        '把今天的想法写下来',
-        '散步 20 分钟',
-        '给绿植浇水',
-        '读一小节书',
-        '整理桌面',
-        '留点时间发呆',
-      ];
+      final titles = Platform.environment['ORBIT_LONG_TITLES'] == '1'
+          ? [
+              '整理下周的工作安排，把最重要的三件事先写下来',
+              '下班后去公园散步二十分钟，顺路买点水果',
+              '给阳台上的绿植浇水，看看新叶子长出来没有',
+              '读完正在看的这一章，再记下一句喜欢的话',
+              '把项目评审需要的资料整理好，确认遗漏的问题',
+              '给自己留点发呆的时间，不需要安排得太满',
+            ]
+          : ['把今天的想法写下来', '散步 20 分钟', '给绿植浇水', '读一小节书', '整理桌面', '留点时间发呆'];
       for (var i = 0; i < titles.length; i++) {
         await controller.upsert(
           OrbitTask(
