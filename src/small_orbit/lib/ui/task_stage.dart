@@ -49,6 +49,7 @@ class TaskStage extends StatefulWidget {
     required this.onEdit,
     required this.onDelete,
     required this.replay,
+    this.minimalChrome = false,
   });
   final List<TaskOccurrence> items;
   final AppSettings settings;
@@ -56,6 +57,7 @@ class TaskStage extends StatefulWidget {
   final ValueChanged<OrbitTask> onEdit;
   final ValueChanged<OrbitTask> onDelete;
   final int replay;
+  final bool minimalChrome;
   @override
   State<TaskStage> createState() => _TaskStageState();
 }
@@ -327,7 +329,9 @@ class _TaskStageState extends State<TaskStage>
                 DisplayMode.cards => _cards(items),
               },
             ),
-            if (pages > 1 || widget.settings.display != DisplayMode.cards)
+            if (pages > 1 ||
+                (!widget.minimalChrome &&
+                    widget.settings.display != DisplayMode.cards))
               SizedBox(
                 height: 44,
                 child: Row(
@@ -615,18 +619,27 @@ class _TaskStageState extends State<TaskStage>
       // Indexes can move while another card finishes saving, or when a task
       // is inserted/reordered. Keep the user's chosen card until it disappears.
       _cardIdentity = item.identity;
-      final height = box.maxHeight < 420 ? 420.0 : box.maxHeight;
+      final minimumHeight =
+          (420 * MediaQuery.textScalerOf(context).scale(16) / 16).clamp(
+            420.0,
+            840.0,
+          );
+      final height = box.maxHeight < minimumHeight
+          ? minimumHeight
+          : box.maxHeight;
       return SingleChildScrollView(
         child: SizedBox(
           height: height,
           child: Column(
             children: [
-              const SizedBox(height: 24),
-              const Text(
-                '先专心做这一件。',
-                style: TextStyle(color: Color(0xff817988), fontSize: 14),
-              ),
-              const SizedBox(height: 24),
+              if (!widget.minimalChrome) ...[
+                const SizedBox(height: 24),
+                const Text(
+                  '先专心做这一件。',
+                  style: TextStyle(color: Color(0xff817988), fontSize: 14),
+                ),
+                const SizedBox(height: 24),
+              ],
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(

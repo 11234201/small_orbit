@@ -84,6 +84,21 @@ int wmain(int argumentCount, wchar_t** arguments) {
   Check(Visible(dpiProposal), "DPI change proposal remains in work area");
   Check(!IsWindowVisible(window), "validation did not show a user-facing window");
   std::cout << "PASS: DPI proposal constrained to visible work area\n";
+  placement.SetMinimumSize(260, 300);
+  SetWindowPos(window, nullptr, 100, 70, MulDiv(260, dpi, 96), MulDiv(300, dpi, 96), SWP_NOZORDER);
+  const RECT compact = Bounds(window);
+  placement.Remember();
+  SetWindowPos(window, nullptr, 100, 70, MulDiv(440, dpi, 96), MulDiv(700, dpi, 96), SWP_NOZORDER);
+  placement.Restore();
+  const RECT compactRestored = Bounds(window);
+  Check(EqualRect(&compact, &compactRestored) != FALSE, "compact window size survives reopen");
+  std::cout << "PASS: compact geometry round trip\n";
+  placement.SetMinimumSize(360, 560);
+  const RECT expanded = Bounds(window);
+  Check(expanded.right - expanded.left >= MulDiv(360, dpi, 96) &&
+        expanded.bottom - expanded.top >= MulDiv(560, dpi, 96), "full view expands to usable size");
+  Check(!IsWindowVisible(window), "mode switch does not show hidden window");
+  std::cout << "PASS: full view restores usable minimum bounds\n";
   DestroyWindow(window);
   UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
   return 0;

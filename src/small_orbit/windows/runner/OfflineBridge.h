@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include "WindowPlacement.h"
+#include "WindowOptions.h"
 
 class OfflineBridge {
  public:
@@ -22,8 +23,13 @@ class OfflineBridge {
   bool IsVisible() const;
   void QueueVisibilityUpdate();
   void PublishVisibility();
+  void RestoreWindowOptions();
+  bool ChangeWindowOptions(bool compact, bool alwaysOnTop);
+  flutter::EncodableValue WindowOptionsValue() const;
   HWND window_;
   WindowPlacement placement_;
+  WindowOptions options_;
+  bool optionsRestored_ = false;
   NOTIFYICONDATAW tray_{};
   bool trayAdded_ = false;
   UINT taskbarMessage_;

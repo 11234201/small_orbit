@@ -156,7 +156,11 @@ class OrbitApp extends StatelessWidget {
         behavior: SnackBarBehavior.floating,
       ),
     ),
-    home: OrbitHome(controller: controller, reminders: reminders),
+    home: OrbitHome(
+      controller: controller,
+      reminders: reminders,
+      window: window,
+    ),
   );
 }
 
@@ -165,9 +169,11 @@ class OrbitHome extends StatefulWidget {
     super.key,
     required this.controller,
     required this.reminders,
+    this.window,
   });
   final OrbitController controller;
   final ReminderService reminders;
+  final WindowService? window;
   @override
   State<OrbitHome> createState() => _OrbitHomeState();
 }
@@ -175,14 +181,19 @@ class OrbitHome extends StatefulWidget {
 class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   final TextEditingController _quick = TextEditingController();
   final FocusNode _quickFocus = FocusNode();
+  final FocusNode _pageFocus = FocusNode(debugLabel: 'todo surface');
+  final GlobalKey _stageKey = GlobalKey();
+  bool _wasCompact = false;
   bool _today = true, _adding = false, _editing = false;
   int _replay = 0;
   OrbitController get controller => widget.controller;
   @override
   void initState() {
     super.initState();
+    _wasCompact = _compact;
     WidgetsBinding.instance.addObserver(this);
     widget.reminders.addListener(_reminderChanged);
+    widget.window?.addListener(_windowChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (controller.notice != null) _message(controller.notice!);
       _reminderChanged();
@@ -193,10 +204,154 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.reminders.removeListener(_reminderChanged);
+    widget.window?.removeListener(_windowChanged);
     _quick.dispose();
     _quickFocus.dispose();
+    _pageFocus.dispose();
     super.dispose();
   }
+
+  void _windowChanged() {
+    final enteredCompact = _compact && !_wasCompact;
+    _wasCompact = _compact;
+    if (mounted) setState(() {});
+    if (enteredCompact) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _compact) _pageFocus.requestFocus();
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant OrbitHome oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.window != widget.window) {
+      oldWidget.window?.removeListener(_windowChanged);
+      widget.window?.addListener(_windowChanged);
+    }
+  }
+
+  bool get _compact => widget.window?.compact ?? false;
+
+  PopupMenuButton<String> _windowMenu() => PopupMenuButton<String>(
+    tooltip: '窗口选项',
+    icon: Icon(_compact ? Icons.more_horiz : Icons.expand_more, size: 20),
+    onOpened: () {
+      if (!(widget.window?.optionsLoaded ?? false))
+        unawaited(widget.window?.refreshOptions());
+    },
+    onSelected: (value) => _safe(() async {
+      final window = widget.window!;
+      switch (value) {
+        case 'compact':
+          _quickFocus.unfocus();
+          await window.setCompact(!window.compact);
+        case 'top':
+          await window.setAlwaysOnTop(!window.alwaysOnTop);
+        case 'add':
+          await _edit();
+        case 'undo':
+          await controller.undo();
+        case 'quit':
+          await window.requestQuit();
+        default:
+          await ReminderService.channel.invokeMethod<void>(value);
+      }
+    }),
+    itemBuilder: (_) => [
+      CheckedPopupMenuItem(
+        value: 'compact',
+        checked: _compact,
+        enabled:
+            (widget.window?.optionsLoaded ?? false) &&
+            !(widget.window?.updatingOptions ?? true),
+        child: Text(_compact ? '恢复完整界面' : '仅显示待办'),
+      ),
+      CheckedPopupMenuItem(
+        value: 'top',
+        checked: widget.window?.alwaysOnTop ?? false,
+        enabled:
+            (widget.window?.optionsLoaded ?? false) &&
+            !(widget.window?.updatingOptions ?? true),
+        child: const Text('窗口置顶'),
+      ),
+      if (_compact) ...[
+        const PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'add',
+          enabled: !_editing && !_adding,
+          child: const Text('添加小事'),
+        ),
+        PopupMenuItem(
+          value: 'undo',
+          enabled: controller.canUndo,
+          child: const Text('撤销上一步'),
+        ),
+      ],
+      const PopupMenuDivider(),
+      const PopupMenuItem(value: 'hide', child: Text('收进托盘')),
+      const PopupMenuItem(value: 'minimize', child: Text('最小化')),
+      const PopupMenuItem(value: 'quit', child: Text('退出并停止提醒')),
+    ],
+  );
+
+  Widget _taskStage(List<TaskOccurrence> items, AppSettings settings) =>
+      TaskStage(
+        key: _stageKey,
+        items: items,
+        settings: settings,
+        replay: _replay,
+        minimalChrome: _compact,
+        onComplete: controller.complete,
+        onEdit: _menu,
+        onDelete: (task) => _safe(() => controller.delete(task.id)),
+      );
+
+  Widget _compactBody(List<TaskOccurrence> items, AppSettings settings) =>
+      Stack(
+        children: [
+          Positioned.fill(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 30, 10, 6),
+              child: _taskStage(items, settings),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 38,
+            height: 28,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.move,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (_) => _safe(() => widget.window!.startDragging()),
+                child: const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: EdgeInsets.only(left: 12),
+                    child: Tooltip(
+                      message: '拖动窗口',
+                      child: Icon(
+                        Icons.drag_indicator,
+                        size: 16,
+                        color: Color(0xffb7acbf),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            right: 0,
+            height: 30,
+            width: 38,
+            child: _windowMenu(),
+          ),
+        ],
+      );
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -385,12 +540,26 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
           const _NewIntent(),
       const SingleActivator(LogicalKeyboardKey.keyZ, control: true):
           const _UndoIntent(),
+      if (_compact)
+        const SingleActivator(LogicalKeyboardKey.escape):
+            const _FullViewIntent(),
     },
     child: Actions(
       actions: {
         _NewIntent: CallbackAction<_NewIntent>(
           onInvoke: (_) {
-            _quickFocus.requestFocus();
+            if (_compact) {
+              unawaited(_edit());
+            } else {
+              _quickFocus.requestFocus();
+            }
+            return null;
+          },
+        ),
+        _FullViewIntent: CallbackAction<_FullViewIntent>(
+          onInvoke: (_) {
+            if (_compact)
+              unawaited(_safe(() => widget.window!.setCompact(false)));
             return null;
           },
         ),
@@ -410,328 +579,333 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
           },
         ),
       },
-      child: ListenableBuilder(
-        listenable: controller,
-        builder: (context, _) {
-          final settings = controller.document.settings;
-          final items = controller.document.active(
-            DateTime.now(),
-            todayOnly: _today,
-          );
-          return Scaffold(
-            body: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
-                child: _AdaptiveViewport(
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.bubble_chart_outlined,
-                            color: Color(0xff947caf),
-                            size: 29,
-                          ),
-                          const SizedBox(width: 8),
-                          const Expanded(
-                            child: Text(
-                              '小事星球',
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: '完成与漏做历史',
-                            onPressed: _history,
-                            icon: const Icon(Icons.history),
-                          ),
-                          IconButton(
-                            tooltip: '设置与备份',
-                            onPressed: () => showDialog<void>(
-                              context: context,
-                              builder: (_) => SettingsPanel(
-                                controller: controller,
-                                reminders: widget.reminders,
-                              ),
-                            ),
-                            icon: const Icon(Icons.tune),
-                          ),
-                          if (Platform.isWindows)
-                            PopupMenuButton<String>(
-                              tooltip: '收起窗口',
-                              icon: const Icon(Icons.expand_more),
-                              onSelected: (value) =>
-                                  ReminderService.channel.invokeMethod(value),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'hide',
-                                  child: Text('收进托盘'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'minimize',
-                                  child: Text('最小化'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'quit',
-                                  child: Text('退出并停止提醒'),
-                                ),
-                              ],
-                            ),
-                        ],
-                      ),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 4, bottom: 12),
-                          child: Text(
-                            items.isEmpty
-                                ? '今天，给自己留一点轻松。'
-                                : '${items.length} 件小事，慢慢来就好。',
-                            style: const TextStyle(
-                              color: Color(0xff817988),
-                              fontSize: 13,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _quick,
-                              focusNode: _quickFocus,
-                              maxLength: 240,
-                              textInputAction: TextInputAction.done,
-                              onSubmitted: (_) => _add(),
-                              decoration: InputDecoration(
-                                counterText: '',
-                                hintText: '放进一件小事…',
-                                isDense: true,
-                                suffixIcon: IconButton(
-                                  tooltip: '日期、提醒和重要程度',
-                                  onPressed: _adding || _editing
-                                      ? null
-                                      : () => _edit(),
-                                  icon: const Icon(Icons.tune, size: 19),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton.filled(
-                            tooltip: '添加小事',
-                            onPressed: _adding ? null : _add,
-                            icon: const Icon(Icons.add),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          ChoiceChip(
-                            label: const Text('今天'),
-                            selected: _today,
-                            showCheckmark: false,
-                            onSelected: (_) => setState(() => _today = true),
-                          ),
-                          const SizedBox(width: 6),
-                          ChoiceChip(
-                            label: const Text('全部'),
-                            selected: !_today,
-                            showCheckmark: false,
-                            onSelected: (_) => setState(() => _today = false),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Align(
-                              alignment: Alignment.centerRight,
-                              child: SizedBox(
-                                width:
-                                    MediaQuery.textScalerOf(context).scale(70) +
-                                    24,
-                                child: DropdownButtonHideUnderline(
-                                  child: DropdownButton<DisplayMode>(
-                                    value: settings.display,
-                                    isExpanded: true,
-                                    alignment: AlignmentDirectional.centerEnd,
-                                    items: const [
-                                      DropdownMenuItem(
-                                        value: DisplayMode.bubbles,
-                                        child: Text(
-                                          '◌  泡泡',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      DropdownMenuItem(
-                                        value: DisplayMode.papers,
-                                        child: Text(
-                                          '▱  纸片',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      DropdownMenuItem(
-                                        value: DisplayMode.cards,
-                                        child: Text(
-                                          '▣  卡牌',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                    ],
-                                    onChanged: (value) => _safe(
-                                      () => controller.updateSettings(
-                                        (current) =>
-                                            current.copyWith(display: value),
+      child: Focus(
+        focusNode: _pageFocus,
+        autofocus: true,
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) {
+            final settings = controller.document.settings;
+            final items = controller.document.active(
+              DateTime.now(),
+              todayOnly: _today,
+            );
+            return Scaffold(
+              body: SafeArea(
+                child: _compact
+                    ? _compactBody(items, settings)
+                    : Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+                        child: _AdaptiveViewport(
+                          child: Column(
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.bubble_chart_outlined,
+                                    color: Color(0xff947caf),
+                                    size: 29,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Expanded(
+                                    child: Text(
+                                      '小事星球',
+                                      style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.w700,
                                       ),
                                     ),
                                   ),
-                                ),
+                                  IconButton(
+                                    tooltip: '完成与漏做历史',
+                                    onPressed: _history,
+                                    icon: const Icon(Icons.history),
+                                  ),
+                                  IconButton(
+                                    tooltip: '设置与备份',
+                                    onPressed: () => showDialog<void>(
+                                      context: context,
+                                      builder: (_) => SettingsPanel(
+                                        controller: controller,
+                                        reminders: widget.reminders,
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.tune),
+                                  ),
+                                  if (widget.window?.enabled ?? false)
+                                    _windowMenu(),
+                                ],
                               ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (settings.display == DisplayMode.bubbles)
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Align(
+                              Align(
                                 alignment: Alignment.centerLeft,
-                                child: SizedBox(
-                                  width:
-                                      MediaQuery.textScalerOf(
-                                        context,
-                                      ).scale(144) +
-                                      24,
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<MotionMode>(
-                                      value: settings.motion,
-                                      isDense: true,
-                                      isExpanded: true,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            fontSize: 12,
-                                            color: const Color(0xff777180),
-                                          ),
-                                      items: const [
-                                        DropdownMenuItem(
-                                          value: MotionMode.opening,
-                                          child: Text(
-                                            '开场弹跳 → 慢慢安静',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        DropdownMenuItem(
-                                          value: MotionMode.gentle,
-                                          child: Text(
-                                            '一直轻轻漂浮',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        DropdownMenuItem(
-                                          value: MotionMode.lively,
-                                          child: Text(
-                                            '一直活泼弹跳',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                      onChanged: (value) => _safe(
-                                        () => controller.updateSettings(
-                                          (current) =>
-                                              current.copyWith(motion: value),
-                                        ),
-                                      ),
+                                child: Padding(
+                                  padding: const EdgeInsets.only(
+                                    top: 4,
+                                    bottom: 12,
+                                  ),
+                                  child: Text(
+                                    items.isEmpty
+                                        ? '今天，给自己留一点轻松。'
+                                        : '${items.length} 件小事，慢慢来就好。',
+                                    style: const TextStyle(
+                                      color: Color(0xff817988),
+                                      fontSize: 13,
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
-                            IconButton(
-                              tooltip: '再弹一次',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () => setState(() => _replay++),
-                              icon: const Icon(Icons.replay, size: 18),
-                            ),
-                            IconButton(
-                              tooltip: settings.paused ? '继续运动' : '暂停运动',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: () => _safe(
-                                () => controller.updateSettings(
-                                  (current) =>
-                                      current.copyWith(paused: !current.paused),
-                                ),
-                              ),
-                              icon: Icon(
-                                settings.paused
-                                    ? Icons.play_arrow
-                                    : Icons.pause,
-                                size: 18,
-                              ),
-                            ),
-                          ],
-                        ),
-                      Expanded(
-                        child: TaskStage(
-                          items: items,
-                          settings: settings,
-                          replay: _replay,
-                          onComplete: controller.complete,
-                          onEdit: _menu,
-                          onDelete: (task) =>
-                              _safe(() => controller.delete(task.id)),
-                        ),
-                      ),
-                      SizedBox(
-                        height: 38,
-                        child: controller.canUndo
-                            ? Row(
+                              Row(
                                 children: [
                                   Expanded(
-                                    child: Text(
-                                      controller.undoLabel ?? '',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 12),
+                                    child: TextField(
+                                      controller: _quick,
+                                      focusNode: _quickFocus,
+                                      maxLength: 240,
+                                      textInputAction: TextInputAction.done,
+                                      onSubmitted: (_) => _add(),
+                                      decoration: InputDecoration(
+                                        counterText: '',
+                                        hintText: '放进一件小事…',
+                                        isDense: true,
+                                        suffixIcon: IconButton(
+                                          tooltip: '日期、提醒和重要程度',
+                                          onPressed: _adding || _editing
+                                              ? null
+                                              : () => _edit(),
+                                          icon: const Icon(
+                                            Icons.tune,
+                                            size: 19,
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                  TextButton(
-                                    onPressed: () => _safe(controller.undo),
-                                    child: const Text('撤销'),
+                                  const SizedBox(width: 8),
+                                  IconButton.filled(
+                                    tooltip: '添加小事',
+                                    onPressed: _adding ? null : _add,
+                                    icon: const Icon(Icons.add),
                                   ),
                                 ],
-                              )
-                            : Center(
-                                child: Text(
-                                  switch (settings.display) {
-                                    DisplayMode.bubbles =>
-                                      '轻点戳破 · 长按编辑 · 越重要越紧急，越大',
-                                    DisplayMode.papers => '做完一件，轻轻收进口袋',
-                                    DisplayMode.cards => '向右划走，或点 ✓ 完成',
-                                  },
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xff9b91a2),
-                                  ),
-                                ),
                               ),
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  ChoiceChip(
+                                    label: const Text('今天'),
+                                    selected: _today,
+                                    showCheckmark: false,
+                                    onSelected: (_) =>
+                                        setState(() => _today = true),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  ChoiceChip(
+                                    label: const Text('全部'),
+                                    selected: !_today,
+                                    showCheckmark: false,
+                                    onSelected: (_) =>
+                                        setState(() => _today = false),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Align(
+                                      alignment: Alignment.centerRight,
+                                      child: SizedBox(
+                                        width:
+                                            MediaQuery.textScalerOf(
+                                              context,
+                                            ).scale(70) +
+                                            24,
+                                        child: DropdownButtonHideUnderline(
+                                          child: DropdownButton<DisplayMode>(
+                                            value: settings.display,
+                                            isExpanded: true,
+                                            alignment:
+                                                AlignmentDirectional.centerEnd,
+                                            items: const [
+                                              DropdownMenuItem(
+                                                value: DisplayMode.bubbles,
+                                                child: Text(
+                                                  '◌  泡泡',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              DropdownMenuItem(
+                                                value: DisplayMode.papers,
+                                                child: Text(
+                                                  '▱  纸片',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              DropdownMenuItem(
+                                                value: DisplayMode.cards,
+                                                child: Text(
+                                                  '▣  卡牌',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                            onChanged: (value) => _safe(
+                                              () => controller.updateSettings(
+                                                (current) => current.copyWith(
+                                                  display: value,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (settings.display == DisplayMode.bubbles)
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: SizedBox(
+                                          width:
+                                              MediaQuery.textScalerOf(
+                                                context,
+                                              ).scale(144) +
+                                              24,
+                                          child: DropdownButtonHideUnderline(
+                                            child: DropdownButton<MotionMode>(
+                                              value: settings.motion,
+                                              isDense: true,
+                                              isExpanded: true,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    fontSize: 12,
+                                                    color: const Color(
+                                                      0xff777180,
+                                                    ),
+                                                  ),
+                                              items: const [
+                                                DropdownMenuItem(
+                                                  value: MotionMode.opening,
+                                                  child: Text(
+                                                    '开场弹跳 → 慢慢安静',
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                DropdownMenuItem(
+                                                  value: MotionMode.gentle,
+                                                  child: Text(
+                                                    '一直轻轻漂浮',
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                DropdownMenuItem(
+                                                  value: MotionMode.lively,
+                                                  child: Text(
+                                                    '一直活泼弹跳',
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              ],
+                                              onChanged: (value) => _safe(
+                                                () => controller.updateSettings(
+                                                  (current) => current.copyWith(
+                                                    motion: value,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: '再弹一次',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () =>
+                                          setState(() => _replay++),
+                                      icon: const Icon(Icons.replay, size: 18),
+                                    ),
+                                    IconButton(
+                                      tooltip: settings.paused
+                                          ? '继续运动'
+                                          : '暂停运动',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => _safe(
+                                        () => controller.updateSettings(
+                                          (current) => current.copyWith(
+                                            paused: !current.paused,
+                                          ),
+                                        ),
+                                      ),
+                                      icon: Icon(
+                                        settings.paused
+                                            ? Icons.play_arrow
+                                            : Icons.pause,
+                                        size: 18,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              Expanded(child: _taskStage(items, settings)),
+                              SizedBox(
+                                height: 38,
+                                child: controller.canUndo
+                                    ? Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              controller.undoLabel ?? '',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                _safe(controller.undo),
+                                            child: const Text('撤销'),
+                                          ),
+                                        ],
+                                      )
+                                    : Center(
+                                        child: Text(
+                                          switch (settings.display) {
+                                            DisplayMode.bubbles =>
+                                              '轻点戳破 · 长按编辑 · 越重要越紧急，越大',
+                                            DisplayMode.papers => '做完一件，轻轻收进口袋',
+                                            DisplayMode.cards => '向右划走，或点 ✓ 完成',
+                                          },
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xff9b91a2),
+                                          ),
+                                        ),
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ],
-                  ),
-                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     ),
   );
@@ -757,4 +931,8 @@ class _AdaptiveViewport extends StatelessWidget {
 
 class _UndoIntent extends Intent {
   const _UndoIntent();
+}
+
+class _FullViewIntent extends Intent {
+  const _FullViewIntent();
 }

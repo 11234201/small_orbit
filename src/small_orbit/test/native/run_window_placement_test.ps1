@@ -16,6 +16,8 @@ $buildScript = @"
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++17 /EHsc /W4 /WX /DUNICODE /D_UNICODE /DNOMINMAX /utf-8 /I"$ephemeral" /I"$runner" /FeWindowPlacementTest.exe "$PSScriptRoot/WindowPlacementTest.cpp" "$runner/WindowPlacement.cpp" /link "$ephemeral/flutter_windows.dll.lib" user32.lib shell32.lib
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++17 /EHsc /W4 /WX /DUNICODE /D_UNICODE /DNOMINMAX /utf-8 /I"$runner" /FeWindowOptionsTest.exe "$PSScriptRoot/WindowOptionsTest.cpp" "$runner/WindowOptions.cpp" /link user32.lib shell32.lib
 exit /b %errorlevel%
 "@
 $buildScriptPath = Join-Path $nativeBuildDirectory 'build.cmd'
@@ -28,6 +30,8 @@ try {
     $env:PATH = "$ephemeral;$previousPath"
     & (Join-Path $nativeBuildDirectory 'WindowPlacementTest.exe') $testDataDirectory
     if ($LASTEXITCODE -ne 0) { throw 'Window placement native test failed' }
+    & (Join-Path $nativeBuildDirectory 'WindowOptionsTest.exe') $testDataDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'Window options native test failed' }
 } finally {
     $env:PATH = $previousPath
     Pop-Location

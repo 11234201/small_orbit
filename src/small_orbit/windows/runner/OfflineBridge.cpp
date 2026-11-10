@@ -26,7 +26,7 @@ std::string ReadString(const flutter::EncodableMap& values, const char* key) {
 }
 
 OfflineBridge::OfflineBridge(HWND window, flutter::BinaryMessenger* messenger)
-    : window_(window), placement_(window),
+    : window_(window), placement_(window), options_(window),
       taskbarMessage_(RegisterWindowMessageW(L"TaskbarCreated")),
       showMessage_(RegisterWindowMessageW(L"SmallOrbit.ShowExistingWindow.v1")) {
   // Restore after the bridge is assigned to FlutterWindow, so DPI messages
@@ -68,6 +68,23 @@ OfflineBridge::OfflineBridge(HWND window, flutter::BinaryMessenger* messenger)
       RequestQuit();
     } else if (call.method_name() == "isVisible") {
       result->Success(flutter::EncodableValue(IsVisible()));
+    } else if (call.method_name() == "getOptions") {
+      RestoreWindowOptions();
+      result->Success(WindowOptionsValue());
+    } else if (call.method_name() == "setCompact" || call.method_name() == "setAlwaysOnTop") {
+      const auto* value = call.arguments() == nullptr ? nullptr : std::get_if<bool>(call.arguments());
+      if (!value) { result->Error("ARGUMENT", "Expected a boolean window option"); return; }
+      RestoreWindowOptions();
+      const bool compact = call.method_name() == "setCompact" ? *value : options_.IsCompact();
+      const bool top = call.method_name() == "setAlwaysOnTop" ? *value : options_.IsAlwaysOnTop();
+      if (ChangeWindowOptions(compact, top)) result->Success(WindowOptionsValue());
+      else result->Error("WINDOW_OPTIONS", "Could not apply and save window settings");
+    } else if (call.method_name() == "startDragging") {
+      result->Success();
+      if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
+        ReleaseCapture();
+        SendMessageW(window_, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+      }
     } else { result->NotImplemented(); }
   });
   QueueVisibilityUpdate();
@@ -96,6 +113,30 @@ bool OfflineBridge::IsVisible() const {
   return IsWindowVisible(window_) != FALSE && IsIconic(window_) == FALSE;
 }
 
+flutter::EncodableValue OfflineBridge::WindowOptionsValue() const {
+  return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("compact"), flutter::EncodableValue(options_.IsCompact())},
+      {flutter::EncodableValue("alwaysOnTop"), flutter::EncodableValue(IsVisible()
+          ? (GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0 : options_.IsAlwaysOnTop())}});
+}
+
+void OfflineBridge::RestoreWindowOptions() {
+  if (optionsRestored_) return;
+  optionsRestored_ = true;
+  options_.Restore();
+  placement_.SetMinimumSize(options_.IsCompact() ? 260 : 360, options_.IsCompact() ? 300 : 560);
+  placement_.Restore();
+}
+
+bool OfflineBridge::ChangeWindowOptions(bool compact, bool alwaysOnTop) {
+  RestoreWindowOptions();
+  if (!options_.SetOptions(compact, alwaysOnTop)) return false;
+  placement_.SetMinimumSize(compact ? 260 : 360, compact ? 300 : 560);
+  placement_.Remember();
+  windowChannel_->InvokeMethod("optionsChanged", std::make_unique<flutter::EncodableValue>(WindowOptionsValue()));
+  return true;
+}
+
 void OfflineBridge::QueueVisibilityUpdate() {
   if (visibilityUpdateQueued_) return;
   visibilityUpdateQueued_ = PostMessageW(window_, kVisibilityMessage, 0, 0) != FALSE;
@@ -106,6 +147,11 @@ void OfflineBridge::PublishVisibility() {
   const bool visible = IsVisible();
   if (lastVisibility_.has_value() && *lastVisibility_ == visible) return;
   lastVisibility_ = visible;
+  if (visible && optionsRestored_) {
+    // Reassert a saved pin after the initial show, minimizing, or tray restore.
+    if (!options_.Reapply()) ShowNotification("小事星球", "窗口置顶未能应用，请在窗口菜单中重试。");
+    windowChannel_->InvokeMethod("optionsChanged", std::make_unique<flutter::EncodableValue>(WindowOptionsValue()));
+  }
   windowChannel_->InvokeMethod("visibilityChanged", std::make_unique<flutter::EncodableValue>(visible));
 }
 
@@ -153,7 +199,7 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
   if (message == showMessage_) { ShowWindow(); return 0; }
   if (message == WM_CLOSE) { placement_.Remember(); ::ShowWindow(window_, trayAdded_ ? SW_HIDE : SW_MINIMIZE); return 0; }
   if (message == kExitMessage) { DestroyWindow(window_); return 0; }
-  if (message == kRestorePlacement) { placement_.Restore(); return 0; }
+  if (message == kRestorePlacement) { RestoreWindowOptions(); return 0; }
   if (message == kRememberPlacement) { placement_.Remember(); return 0; }
   if (message == kVisibilityMessage) { PublishVisibility(); return 0; }
   // WM_SHOWWINDOW is sent before the state transition. Defer the query until
@@ -175,8 +221,8 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
     MONITORINFO monitor{};
     monitor.cbSize = sizeof(monitor);
     const bool known = GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE;
-    info->ptMinTrackSize.x = (std::min<LONG>)(MulDiv(360, static_cast<int>(dpi), 96), known ? monitor.rcWork.right - monitor.rcWork.left : 32000L);
-    info->ptMinTrackSize.y = (std::min<LONG>)(MulDiv(560, static_cast<int>(dpi), 96), known ? monitor.rcWork.bottom - monitor.rcWork.top : 32000L);
+    info->ptMinTrackSize.x = (std::min<LONG>)(MulDiv(options_.IsCompact() ? 260 : 360, static_cast<int>(dpi), 96), known ? monitor.rcWork.right - monitor.rcWork.left : 32000L);
+    info->ptMinTrackSize.y = (std::min<LONG>)(MulDiv(options_.IsCompact() ? 300 : 560, static_cast<int>(dpi), 96), known ? monitor.rcWork.bottom - monitor.rcWork.top : 32000L);
     return 0;
   }
   if (message != kTrayMessage) return std::nullopt;
@@ -184,6 +230,8 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
   if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, 1, L"打开小事星球");
+    AppendMenuW(menu, MF_STRING | (options_.IsCompact() ? MF_CHECKED : MF_UNCHECKED), 3, L"仅显示待办");
+    AppendMenuW(menu, MF_STRING | (options_.IsAlwaysOnTop() ? MF_CHECKED : MF_UNCHECKED), 4, L"窗口置顶");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 2, L"退出并停止提醒");
     POINT cursor; GetCursorPos(&cursor); SetForegroundWindow(window_);
@@ -191,6 +239,13 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
     DestroyMenu(menu);
     if (selected == 1) ShowWindow();
     if (selected == 2) RequestQuit();
+    if (selected == 3 || selected == 4) {
+      const bool compact = selected == 3 ? !options_.IsCompact() : options_.IsCompact();
+      const bool top = selected == 4 ? !options_.IsAlwaysOnTop() : options_.IsAlwaysOnTop();
+      if (!ChangeWindowOptions(compact, top)) {
+        ShowNotification("小事星球", "窗口设置未保存，请重试。");
+      }
+    }
     PostMessageW(window_, WM_NULL, 0, 0);
   }
   return 0;

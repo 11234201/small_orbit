@@ -82,8 +82,8 @@ void WindowPlacement::Restore() {
           const UINT dpi = FlutterDesktopGetDpiForMonitor(
               MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST));
           const int scale = static_cast<int>(dpi == 0 ? 96 : dpi);
-          bounds.right = bounds.left + (std::max)(MulDiv(width, scale, savedDpi), MulDiv(360, scale, 96));
-          bounds.bottom = bounds.top + (std::max)(MulDiv(height, scale, savedDpi), MulDiv(560, scale, 96));
+          bounds.right = bounds.left + (std::max)(MulDiv(width, scale, savedDpi), MulDiv(minimumWidth_, scale, 96));
+          bounds.bottom = bounds.top + (std::max)(MulDiv(height, scale, savedDpi), MulDiv(minimumHeight_, scale, 96));
           ApplyBounds(bounds);
         }
       }
@@ -120,7 +120,19 @@ void WindowPlacement::Remember() {
 void WindowPlacement::KeepVisible() {
   if (IsIconic(window_) || IsZoomed(window_)) return;
   RECT bounds{};
-  if (GetWindowRect(window_, &bounds)) ApplyBounds(bounds);
+  if (GetWindowRect(window_, &bounds)) {
+    const UINT dpi = GetDpiForWindow(window_);
+    const int scale = static_cast<int>(dpi == 0 ? 96 : dpi);
+    bounds.right = bounds.left + (std::max)(bounds.right - bounds.left, static_cast<LONG>(MulDiv(minimumWidth_, scale, 96)));
+    bounds.bottom = bounds.top + (std::max)(bounds.bottom - bounds.top, static_cast<LONG>(MulDiv(minimumHeight_, scale, 96)));
+    ApplyBounds(bounds);
+  }
+}
+
+void WindowPlacement::SetMinimumSize(int width, int height) {
+  minimumWidth_ = (std::max)(width, 100);
+  minimumHeight_ = (std::max)(height, 100);
+  KeepVisible();
 }
 
 void WindowPlacement::AdjustDpiChange(RECT& proposed) {

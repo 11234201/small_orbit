@@ -12,6 +12,7 @@ class WindowPlacement {
   void Remember();
   void KeepVisible();
   void AdjustDpiChange(RECT& proposed);
+  void SetMinimumSize(int width, int height);
 
  private:
   void ApplyBounds(RECT bounds);
@@ -20,6 +21,8 @@ class WindowPlacement {
   HWND window_;
   bool applyingBounds_ = false;
   RECT requestedBounds_{};
+  int minimumWidth_ = 360;
+  int minimumHeight_ = 560;
 };
 
 #endif

@@ -39,7 +39,7 @@ cd android
 
 ## 候选版版本和统一回归
 
-发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.3+5`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
+发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.6+8`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
 
 当前模型使用与输入框一致的 `characters` 字符计数。在项目根目录单独编译模型基准时，要提供应用包配置：`dart compile exe --packages=src/small_orbit/.dart_tool/package_config.json scripts/benchmark_model.dart -o .build_cache/benchmark_model`。此前已保存的基线/优化样本源文件不变，旧测量仍按当时源码复现。
 
@@ -55,7 +55,7 @@ bash /home/wzh/my_code/todo_list/scripts/verify_shared.sh
 python scripts/verify_windows.py
 ```
 
-Windows 原生窗口测试使用已有 MSVC/SDK，仅创建自己的隐藏测试窗口：
+Windows 原生窗口测试使用已有 MSVC/SDK，在独立 `.qa_data/windows_native_test` 使用自己的窗口。位置测试使用隐藏窗口；置顶测试将窗口放在所有显示器之外，不激活、不显示任务栏入口，验证真实置顶样式及重新显示行为：
 
 ```powershell
 ./src/small_orbit/test/native/run_window_placement_test.ps1
@@ -71,7 +71,7 @@ Windows 原生窗口测试使用已有 MSVC/SDK，仅创建自己的隐藏测试
 
 ## 验证
 
-Flutter 测试覆盖日历、文件校验、中断恢复、导入备份、跨模式完成与撤销、牌堆操作、泡泡边界和 320/390/480 宽度布局。Android 另有 5 项原生日历调度测试。`ORBIT_PREVIEW_DIR` 可让布局测试输出 PNG；截图模式使用远端预装中文字体，不把字体打进应用。实际结果和未覆盖范围见 `validation.md`。
+Flutter 测试覆盖日历、文件校验、中断恢复、导入备份、跨模式完成与撤销、牌堆操作、泡泡边界和 320/390/480 宽度布局；窗口选项与简洁模式另有260×300大字号检查。Android原生回归覆盖日历、回执及提醒配置。`ORBIT_PREVIEW_DIR` 可让布局测试输出 PNG；`ORBIT_WINDOW_PREVIEW_DIR` 配合 `flutter test test_tools/render_window_modes.dart` 输出完整/简洁/菜单预览。截图使用远端预装中文字体，不把字体打进应用。实际结果和未覆盖范围见 `validation.md`。
 
 `SMALL_ORBIT_DATA_DIR` 可为测试指定独立数据目录。没有真机时，不把自动测试等同于 Android 厂商后台提醒验证。
 
