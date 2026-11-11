@@ -17,6 +17,7 @@ import java.time.ZoneId
 
 object ReminderScheduler {
     const val channelId = "little_things"
+    private const val alarmRegistryKey = "scheduled_ids_v2"
     private fun prefs(context: Context) = context.getSharedPreferences("orbit_reminders", Context.MODE_PRIVATE)
     private var receiptJournal: ReminderReceiptJournal? = null
     private val configJournal = ReminderConfigJournal<JSONObject>()
@@ -52,10 +53,6 @@ object ReminderScheduler {
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return
         context.getSystemService(AlarmManager::class.java).cancel(pending)
         pending.cancel()
-    }
-    private fun cancel(context: Context, id: String) {
-        cancelAlarm(context, id)
-        context.getSystemService(NotificationManager::class.java).cancel(id, 1)
     }
     private fun sameTaskData(left: JSONObject, right: JSONObject?): Boolean {
         if (right == null || left.length() != right.length()) return false
@@ -93,7 +90,9 @@ object ReminderScheduler {
                     val task = old.optJSONObject(i) ?: continue
                     val id = task.optString("id")
                     if (id.isEmpty()) continue
-                    cancelAlarm(context,id)
+                    // Retained tasks are reconciled by the rolling window;
+                    // deleted legacy tasks are no longer in the new config.
+                    if (nextById[id] == null) cancelAlarm(context,id)
                     // Recompute against the newest incoming task. A failed
                     // removal followed by undo must preserve its notification.
                     // Compare JSON values so key reordering on restore is safe.
@@ -112,10 +111,36 @@ object ReminderScheduler {
             createChannel(context)
             val config = config(context)
             val tasks = config.getJSONArray("tasks")
+            val today = LocalDate.now()
+            val now = System.currentTimeMillis()
+            val canNotify = context.getSystemService(NotificationManager::class.java).areNotificationsEnabled() && channelEnabled(context)
+            val delivered = receipts(context).snapshot()
+            val candidates = mutableListOf<PlannedReminder>()
+            val taskIds = mutableSetOf<String>()
             for (i in 0 until tasks.length()) {
                 val task = tasks.getJSONObject(i)
-                if (config.optBoolean("enabled")) schedule(context, task) else cancel(context, task.getString("id"))
+                val id = task.getString("id")
+                taskIds.add(id)
+                if (config.optBoolean("enabled")) {
+                    plan(task, today, now, canNotify, delivered)?.let { candidates.add(it) }
+                } else {
+                    context.getSystemService(NotificationManager::class.java).cancel(id, 1)
+                }
             }
+            val store = prefs(context)
+            // No registry means an older release may have registered every
+            // task. Cancel the surplus before installing the bounded window.
+            val registered = store.getStringSet(alarmRegistryKey, null)?.toSet() ?: taskIds
+            ReminderWindow.reconcile(
+                candidates, registered,
+                persist = { ids ->
+                    // Always commit, including after commit(false), which can
+                    // have already changed SharedPreferences' in-memory value.
+                    check(store.edit().putStringSet(alarmRegistryKey, ids).commit()) { "无法保存提醒调度记录" }
+                },
+                cancel = { cancelAlarm(context, it) },
+                schedule = { schedule(context, it) },
+            )
         } catch (error: Exception) {
             if (failure == null) failure = error else failure.addSuppressed(error)
         }
@@ -131,21 +156,26 @@ object ReminderScheduler {
         val key = if (task.getString("repeat") == "none") "once" else day.toString()
         return !task.getJSONObject("records").isNull(key)
     }
-    private fun schedule(context: Context, task: JSONObject, after: LocalDate? = null) {
+    private fun plan(task: JSONObject, today: LocalDate, now: Long, canNotify: Boolean, delivered: Set<String>): PlannedReminder? {
         val id = task.getString("id")
-        if (task.isNull("date") || task.isNull("reminderMinute")) { cancel(context, id); return }
+        if (task.isNull("date") || task.isNull("reminderMinute")) return null
         val repeat = task.getString("repeat")
         val start = LocalDate.parse(task.getString("date"))
-        val today = LocalDate.now()
-        val delivered = receipts(context).snapshot()
-        val day = ReminderPlan.next(start,repeat,today,after) { candidate ->
-            isComplete(task,candidate) || delivered.contains(receipt(task,candidate))
-        } ?: run { cancelAlarm(context,id); return }
         val minute = task.getInt("reminderMinute")
-        val instant = day.atTime(minute / 60, minute % 60).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        val trigger = maxOf(instant, System.currentTimeMillis()+1000)
+        fun instant(day: LocalDate) = day.atTime(minute / 60, minute % 60).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val day = ReminderPlan.next(start,repeat,today) { candidate ->
+            isComplete(task,candidate) || delivered.contains(receipt(task,candidate)) ||
+                // Denied notifications must not occupy the whole window with
+                // already-due alarms. Granting permission/resuming recomputes
+                // today's reminders, without falsely marking them delivered.
+                (!canNotify && instant(candidate) <= now)
+        } ?: return null
+        return PlannedReminder(id, day, instant(day))
+    }
+    private fun schedule(context: Context, reminder: PlannedReminder) {
+        val trigger = maxOf(reminder.triggerAtMillis, System.currentTimeMillis()+1000)
         val alarms = context.getSystemService(AlarmManager::class.java)
-        val intent = alarmIntent(context,id,day.toString())
+        val intent = alarmIntent(context,reminder.id,reminder.day.toString())
         try {
             if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,trigger,intent)
             else alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,trigger,intent)
@@ -156,10 +186,10 @@ object ReminderScheduler {
         try {
             deliverOccurrence(context,id,dayText,journal)
         } finally {
-            // Keep dirty receipts in memory on failure. The receiver's retry,
-            // later deliveries, resume, native scheduling, and Flutter
-            // synchronization all attempt persistence again.
-            journal.flush()
+            // Refill from ALL tasks after every delivery, even with Flutter
+            // closed. scheduleAll also retries dirty receipts, and still
+            // installs the next window if receipt persistence fails.
+            scheduleAll(context, true)
         }
     }
     private fun deliverOccurrence(context: Context, id: String, dayText: String, journal: ReminderReceiptJournal) {
@@ -172,7 +202,7 @@ object ReminderScheduler {
         val minute = task.getInt("reminderMinute")
         val due = day.atTime(minute / 60,minute % 60).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         if (!ReminderPlan.contains(start,task.getString("repeat"),day) || due > System.currentTimeMillis()) {
-            schedule(context,task); return
+            return
         }
         val delivered = journal.snapshot()
         val key = receipt(task,day)
@@ -192,7 +222,6 @@ object ReminderScheduler {
                 journal.record(key)
             }
         }
-        if (task.getString("repeat") != "none") schedule(context,task,day)
     }
 }
 class ReminderReceiver : BroadcastReceiver() {

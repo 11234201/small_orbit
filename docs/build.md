@@ -52,6 +52,10 @@ cd android
 
 ## 候选版版本和统一回归
 
+`.github/workflows/verify.yml` 在push、pull request和手动触发时执行两条独立作业：Ubuntu运行静态分析、Flutter测试和Android JVM测试；Windows 2022运行Release构建及原生窗口测试。使用Flutter 3.47.9、JDK 17和固定提交的Actions，仅授予仓库读取权限，不需要发布签名或仓库密钥。日志与测试报告保留14天。首次推送前，不能把本地校验记录称为GitHub托管运行成功。
+
+`bash scripts/verify_shared.sh` 现在从脚本位置定位仓库，不依赖固定服务器路径。默认使用PATH中的Flutter/JDK/Android SDK；存在 `.toolchain/env.sh` 时复用维护者环境，也可用 `ORBIT_TOOLCHAIN_ENV` 指定。`ORBIT_LOG_DIR` 可指定独立日志目录。脚本先按pubspec.lock校验依赖，再执行分析/测试；通过 `flutter build apk --debug --config-only --no-pub` 为干净源码生成被忽略的Gradle包装器与local.properties。Gradle默认使用3GB堆、2个worker，不要求已有构建目录。
+
 发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.7+9`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
 
 当前模型使用与输入框一致的 `characters` 字符计数。在项目根目录单独编译模型基准时，要提供应用包配置：`dart compile exe --packages=src/small_orbit/.dart_tool/package_config.json scripts/benchmark_model.dart -o .build_cache/benchmark_model`。此前已保存的基线/优化样本源文件不变，旧测量仍按当时源码复现。

@@ -1,0 +1,83 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.47.9'
+  FLUTTER_SUPPRESS_ANALYTICS: 'true'
+
+jobs:
+  shared:
+    name: Flutter and Android regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Analyze and test
+        run: bash scripts/verify_shared.sh
+      - name: Keep verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shared-verification
+          path: |
+            logs/
+            src/small_orbit/build/app/reports/tests/
+            src/small_orbit/build/app/test-results/
+          retention-days: 14
+
+  windows:
+    name: Windows build and native regression
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Resolve locked dependencies
+        working-directory: src/small_orbit
+        run: flutter pub get --enforce-lockfile
+      - name: Build Windows and run native tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          $logRoot = (Resolve-Path logs).Path
+          Push-Location src/small_orbit
+          try {
+            flutter build windows --release --no-pub 2>&1 | Tee-Object (Join-Path $logRoot 'ci_windows_build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+          } finally { Pop-Location }
+          & ./src/small_orbit/test/native/run_window_placement_test.ps1 2>&1 | Tee-Object (Join-Path $logRoot 'ci_windows_native.log')
+      - name: Keep verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-verification
+          path: logs/
+          retention-days: 14
