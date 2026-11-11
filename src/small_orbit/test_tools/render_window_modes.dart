@@ -66,6 +66,20 @@ void main() {
     await tester.tap(find.byTooltip('窗口选项'));
     await tester.pumpAndSettle();
     await capture('compact_menu');
+    await tester.tap(
+      find
+          .ancestor(
+            of: find.text('窗口透明度 · 100%'),
+            matching: find.byWidgetPredicate(
+              (widget) => widget is PopupMenuItem<String>,
+            ),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    tester.widget<Slider>(find.byType(Slider)).onChangeEnd!(70);
+    await tester.pumpAndSettle();
+    await capture('opacity_panel');
     await tester.pumpWidget(const SizedBox());
     fixture.dispose();
     tester.view.resetPhysicalSize();

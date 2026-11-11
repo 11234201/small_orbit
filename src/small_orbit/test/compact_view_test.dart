@@ -21,6 +21,7 @@ class DesktopFixture {
   );
   bool compact, top = false, fail = false;
   int drags = 0;
+  int opacity = 100;
   Future<void> initialize({int tasks = 1}) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -30,11 +31,15 @@ class DesktopFixture {
             compact = call.arguments as bool;
           }
           if (call.method == 'setAlwaysOnTop') top = call.arguments as bool;
+          if (call.method == 'setOpacity') {
+            if (fail) throw PlatformException(code: 'disk');
+            opacity = call.arguments as int;
+          }
           if (call.method == 'startDragging') {
             drags++;
             return null;
           }
-          return {'compact': compact, 'alwaysOnTop': top};
+          return {'compact': compact, 'alwaysOnTop': top, 'opacity': opacity};
         });
     await controller.initialize();
     await controller.settings(

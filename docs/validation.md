@@ -1,5 +1,21 @@
 # 验证记录
 
+## 1.0.0-rc.7+9：2026-11-11，整个窗口透明度
+
+- 采用Win32分层窗口全局alpha，调节整个窗口，不仅改变泡泡；100%时移除分层样式。范围30%～100%，面板每档5%，松开滑块后写入；不启用鼠标穿透。
+- 本机窗口偏好内容升级为版本2，兼容版本1（默认100%），任务备份格式仍为1。修改透明度不会重置简洁/置顶；保存失败回滚原生alpha和逻辑值，面板允许重试，托盘可恢复完全不透明。
+- 远端静态分析无问题，122项Flutter回归通过（新增3项）：完整/简洁入口、松手才持久化、恢复100%、失败重试、范围校验、260×300大字号与外部重置刷新。日志 `opacity_analyze.log`、`opacity_tests.log`；实际面板渲染已检查，见 `preview/window_modes/opacity_panel.png`。
+- 本机16项原生检查通过（原13项加3组透明度检查），包括alpha=77对应30%、保持可交互、置顶/简洁独立、偏好重读、隐藏再显示、写入失败回滚、异常值及旧偏好恢复。首次在既有置顶步骤失败；诊断发现Win32返回成功却没有实际置顶。增加一次有界重试并继续严格核查实际样式后，未加入测试预热的完整检查通过。日志 `logs/opacity_native.log`、`opacity_native_diagnostic.log`。
+- Flutter回归和Android构建在 `/home/wzh/my_code/todo_list`，Windows构建及原生检查因需要Win32/MSVC在本机执行。没有修改个人任务数据。面板截图采用模拟通道，原生alpha检查使用独立测试窗口；尚未把完整Flutter桌面合成、Windows 11和多屏验收标为通过。
+
+两端Release构建及包校验通过；Android两种APK版本码9、原签名不变，未重复运行未改变的Android JVM回归。108项源码/脚本指纹本地与服务器一致，远端Gradle已停止。本机Windows构建日志 `windows_opacity_rc7_build.log`，远端Android验证日志 `opacity_android_verification.log`。发布后保留rc.6附件和标签。
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `small_orbit-1.0.0-rc.7-windows-x64.zip` | 13,427,592 | `507150e16cd3ae502563e2525f3d856250ee0c84d055052fcc446dd50defa7a0` |
+| `small_orbit-1.0.0-rc.7-android.apk` | 55,459,953 | `5a450753ba28618e3556c95452d97e777a89cdea4365c9fe298d9c4c48192745` |
+| `small_orbit-1.0.0-rc.7-android-arm64.apk` | 19,283,126 | `9eacf58407258850010c0909c26893b73e79410b821a50e55f9318f0b4b630f5` |
+
 ## 2026-11-10：rc.6 首次公开发布准备
 
 公开目标为 [11234201/small_orbit](https://github.com/11234201/small_orbit)，Release标签为 `v1.0.0-rc.6`，保持候选版。本轮不改应用逻辑，复用下面已经验证的 `1.0.0-rc.6+8` 二进制；119项Flutter和13项原生检查的执行记录仍属于前一轮，没有重复宣称运行。

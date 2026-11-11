@@ -94,6 +94,47 @@ int wmain(int argumentCount, wchar_t** arguments) {
   Check(!missing.IsCompact() && !missing.IsAlwaysOnTop(), "failed native apply leaves logical state unchanged");
   Check(GetForegroundWindow() != window, "test never steals focus");
   std::cout << "PASS: native failure does not publish new state\n";
+  WindowOptions translucent(window);
+  translucent.Restore();
+  Check(translucent.SetOpacity(30), "apply whole-window opacity");
+  BYTE alpha = 0;
+  DWORD flags = 0;
+  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77 && flags == LWA_ALPHA,
+        "native alpha matches 30 percent");
+  Check((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TRANSPARENT) == 0, "opacity does not enable click-through");
+  Check(translucent.SetOptions(false, true) && IsTopmost(window), "opacity coexists with normal pinned view");
+  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77, "mode switch preserves alpha");
+  WindowOptions restoredOpacity(window);
+  restoredOpacity.Restore();
+  Check(restoredOpacity.OpacityPercent() == 30 && restoredOpacity.IsAlwaysOnTop(), "opacity survives reopen");
+  ShowWindow(window, SW_HIDE);
+  ShowWindow(window, SW_SHOWNOACTIVATE);
+  Check(restoredOpacity.Reapply() && GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77,
+        "opacity reapplies on show");
+  std::cout << "PASS: alpha, interaction, pin, mode and restart preservation\n";
+
+  Check(CreateDirectoryW(pending.c_str(), nullptr) != FALSE, "block opacity persistence");
+  Check(!restoredOpacity.SetOpacity(75) && restoredOpacity.OpacityPercent() == 30, "failed opacity write preserves preference");
+  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77, "failed opacity write rolls back alpha");
+  Check(RemoveDirectoryW(pending.c_str()) != FALSE, "remove opacity blocker");
+  Check(restoredOpacity.SetOpacity(75), "opacity retry succeeds");
+  Check(!restoredOpacity.SetOpacity(0) && !restoredOpacity.SetOpacity(101) && restoredOpacity.OpacityPercent() == 75,
+        "invalid opacity rejected without changing state");
+  Check(restoredOpacity.SetOpacity(100) && (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0,
+        "full opacity restores ordinary compositing");
+  std::cout << "PASS: opacity rollback, retry, validation and full reset\n";
+
+  WritePreference(preference, "1 1 0\n");
+  WindowOptions legacy(window);
+  legacy.Restore();
+  Check(legacy.IsCompact() && !legacy.IsAlwaysOnTop() && legacy.OpacityPercent() == 100, "legacy preferences preserved");
+  for (const auto& invalid : {"2 1 1 0", "2 1 1 101", "2 1 1 50 trailing", "3 1 1 50"}) {
+    WritePreference(preference, invalid);
+    legacy.Restore();
+    Check(!legacy.IsCompact() && !legacy.IsAlwaysOnTop() && legacy.OpacityPercent() == 100, "invalid opacity preferences use visible defaults");
+  }
+  Check(GetForegroundWindow() != window, "opacity never activates the test window");
+  std::cout << "PASS: legacy preferences and corrupt opacity recovery\n";
   DestroyWindow(window);
   UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
   return 0;

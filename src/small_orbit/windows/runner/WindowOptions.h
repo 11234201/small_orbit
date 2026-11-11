@@ -11,16 +11,21 @@ class WindowOptions {
   void Restore();
   bool Reapply();
   bool SetOptions(bool compact, bool alwaysOnTop);
+  bool SetOpacity(int percent);
+  int OpacityPercent() const;
   bool IsCompact() const;
   bool IsAlwaysOnTop() const;
 
  private:
-  bool Apply(bool compact, bool alwaysOnTop);
-  bool Save(bool compact, bool alwaysOnTop) const;
+  bool SetValues(bool compact, bool alwaysOnTop, int opacity);
+  bool Apply(bool compact, bool alwaysOnTop, int opacity);
+  bool ApplyOpacity(int percent);
+  bool Save(bool compact, bool alwaysOnTop, int opacity) const;
   std::wstring FilePath() const;
   HWND window_;
   bool compact_ = false;
   bool alwaysOnTop_ = false;
+  int opacity_ = 100;
 };
 
 #endif

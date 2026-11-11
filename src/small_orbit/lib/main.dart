@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'ui/window_opacity_panel.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -248,6 +249,12 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
           await window.setCompact(!window.compact);
         case 'top':
           await window.setAlwaysOnTop(!window.alwaysOnTop);
+        case 'opacity':
+          await showDialog<void>(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => WindowOpacityPanel(window: window),
+          );
         case 'add':
           await _edit();
         case 'undo':
@@ -274,6 +281,13 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
             (widget.window?.optionsLoaded ?? false) &&
             !(widget.window?.updatingOptions ?? true),
         child: const Text('窗口置顶'),
+      ),
+      PopupMenuItem(
+        value: 'opacity',
+        enabled:
+            (widget.window?.optionsLoaded ?? false) &&
+            !(widget.window?.updatingOptions ?? true),
+        child: Text('窗口透明度 · ${widget.window?.opacity ?? 100}%'),
       ),
       if (_compact) ...[
         const PopupMenuDivider(),

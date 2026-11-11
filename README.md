@@ -4,7 +4,7 @@
 
 一个面向个人工作和生活的 **Windows / Android 离线待办工具**。默认泡泡，也可以切换纸片和卡牌；不用注册，没有云端依赖，用轻巧的完成反馈整理每天的小事。
 
-**[下载 v1.0.0-rc.6](https://github.com/11234201/small_orbit/releases/tag/v1.0.0-rc.6)** · [使用说明](docs/user_guide.md) · [版本记录](docs/changelog.md) · [反馈问题](https://github.com/11234201/small_orbit/issues)
+**[下载 v1.0.0-rc.7](https://github.com/11234201/small_orbit/releases/tag/v1.0.0-rc.7)** · [使用说明](docs/user_guide.md) · [版本记录](docs/changelog.md) · [反馈问题](https://github.com/11234201/small_orbit/issues)
 
 ## 看起来是什么样
 
@@ -21,20 +21,20 @@
 - **大小表达优先级**：重要程度与紧急程度共同决定泡泡大小；长标题保留全文，泡泡内最多显示两行。
 - **可选运动节奏**：开场后安静、持续轻漂、持续活泼，也可以暂停或减少动态。可见但失焦的窗口继续运动，最小化或收进托盘后暂停。
 - **日常待办**：快速添加、日期、提醒、每日/每周重复、搜索概览、完成历史与撤销。漏做的旧周期记入历史，当前不堆积多条。
-- **Windows 小窗口**：仅显示待办、窗口置顶、拖动缩放、托盘收起；窗口位置、尺寸和两个显示选项会在本机记住。
+- **Windows 小窗口**：仅显示待办、窗口置顶、整窗透明度、拖动缩放、托盘收起；窗口位置、尺寸和两个显示选项会在本机记住。
 - **离线备份**：导出 `.orbit` 文件，在另一设备手动整份恢复；替换前自动备份。没有自动同步或跨设备合并。
 
 ## 下载与安装
 
-当前发布 **1.0.0-rc.6+8**，标记为 **Pre-release（候选版）**。
+当前发布 **1.0.0-rc.7+9**，标记为 **Pre-release（候选版）**。
 
 | 平台 | 下载 | 使用方法 |
 | --- | --- | --- |
-| Windows 10/11 x64 | [Windows 便携 ZIP](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.6/small_orbit-1.0.0-rc.6-windows-x64.zip) | 解压整个文件夹，运行 `small_orbit.exe`；保留 DLL 和 `data` 目录 |
-| Android 8.0+，ARM64 | [Android ARM64 APK](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.6/small_orbit-1.0.0-rc.6-android-arm64.apk) | 适合常见 ARM64 手机，包更小；用系统安装器安装 |
-| Android 8.0+，其他架构 | [Android 通用 APK](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.6/small_orbit-1.0.0-rc.6-android.apk) | 包含 ARM64、ARMv7、x86_64；不确定架构时选此包 |
+| Windows 10/11 x64 | [Windows 便携 ZIP](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.7/small_orbit-1.0.0-rc.7-windows-x64.zip) | 解压整个文件夹，运行 `small_orbit.exe`；保留 DLL 和 `data` 目录 |
+| Android 8.0+，ARM64 | [Android ARM64 APK](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.7/small_orbit-1.0.0-rc.7-android-arm64.apk) | 适合常见 ARM64 手机，包更小；用系统安装器安装 |
+| Android 8.0+，其他架构 | [Android 通用 APK](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.7/small_orbit-1.0.0-rc.7-android.apk) | 包含 ARM64、ARMv7、x86_64；不确定架构时选此包 |
 
-[所有发布版本](https://github.com/11234201/small_orbit/releases) · [SHA-256 校验清单](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.6/SHA256SUMS-1.0.0-rc.6.txt)
+[所有发布版本](https://github.com/11234201/small_orbit/releases) · [SHA-256 校验清单](https://github.com/11234201/small_orbit/releases/download/v1.0.0-rc.7/SHA256SUMS-1.0.0-rc.7.txt)
 
 Windows 包包含所需的 Visual C++ 运行库，使用时不需要安装 Flutter。Android 首次设置提醒时需要允许系统通知；准时提醒的授权可在设置中检查。
 
@@ -47,11 +47,13 @@ Windows 包包含所需的 Visual C++ 运行库，使用时不需要安装 Flutt
 3. 拖动顶部细条移动，拖动窗口边缘缩放。右上角 `⋯` 可添加、撤销、收起和退出。
 4. 在待办界面按 `Esc`，或选择“恢复完整界面”，重新显示全部控件。
 
+右上角“窗口选项 → 窗口透明度”可调节整个窗口的不透明度（30%～100%），松开滑块后生效并记住。100%完全不透明；面板或托盘菜单可一键恢复。[调节面板预览](docs/preview/window_modes/opacity_panel.png)。
+
 `Ctrl+N` 添加，`Ctrl+Z` 撤销最近任务操作；输入框内的 `Ctrl+Z` 保留文本撤销行为。
 
 ## 当前验证与使用边界
 
-rc.6 已通过 **119 项 Flutter 回归**和 **13 项 Windows 原生窗口检查**，静态分析无问题；两端发布构建及安装包完整性检查通过。Android 通用与 ARM64 包沿用同一签名，不申请 INTERNET 权限。
+rc.7 已通过 **122 项 Flutter 回归**和 **16 项 Windows 原生窗口检查**，静态分析无问题；两端发布构建及安装包完整性检查通过。Android 通用与 ARM64 包沿用同一签名，不申请 INTERNET 权限。
 
 Android 15 厂商后台提醒、Windows 10/11 完整桌面交互、多屏/系统通知、真机覆盖升级和连续使用仍需继续验收，因此当前保持候选版。Windows 明确退出后不会提醒；Android 系统“强制停止”后需重新打开，系统省电或通知设置也可能影响送达。具体证据见 [验证记录](docs/validation.md) 和 [设备验收清单](docs/device_acceptance.md)。
 

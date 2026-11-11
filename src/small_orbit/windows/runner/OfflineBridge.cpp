@@ -79,6 +79,14 @@ OfflineBridge::OfflineBridge(HWND window, flutter::BinaryMessenger* messenger)
       const bool top = call.method_name() == "setAlwaysOnTop" ? *value : options_.IsAlwaysOnTop();
       if (ChangeWindowOptions(compact, top)) result->Success(WindowOptionsValue());
       else result->Error("WINDOW_OPTIONS", "Could not apply and save window settings");
+    } else if (call.method_name() == "setOpacity") {
+      const auto* value = call.arguments() == nullptr ? nullptr : std::get_if<int32_t>(call.arguments());
+      if (!value || *value < 30 || *value > 100) { result->Error("ARGUMENT", "Expected opacity from 30 to 100"); return; }
+      RestoreWindowOptions();
+      if (options_.SetOpacity(*value)) {
+        windowChannel_->InvokeMethod("optionsChanged", std::make_unique<flutter::EncodableValue>(WindowOptionsValue()));
+        result->Success(WindowOptionsValue());
+      } else result->Error("WINDOW_OPTIONS", "Could not apply and save opacity");
     } else if (call.method_name() == "startDragging") {
       result->Success();
       if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
@@ -115,6 +123,7 @@ bool OfflineBridge::IsVisible() const {
 
 flutter::EncodableValue OfflineBridge::WindowOptionsValue() const {
   return flutter::EncodableValue(flutter::EncodableMap{
+      {flutter::EncodableValue("opacity"), flutter::EncodableValue(options_.OpacityPercent())},
       {flutter::EncodableValue("compact"), flutter::EncodableValue(options_.IsCompact())},
       {flutter::EncodableValue("alwaysOnTop"), flutter::EncodableValue(IsVisible()
           ? (GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0 : options_.IsAlwaysOnTop())}});
@@ -149,7 +158,7 @@ void OfflineBridge::PublishVisibility() {
   lastVisibility_ = visible;
   if (visible && optionsRestored_) {
     // Reassert a saved pin after the initial show, minimizing, or tray restore.
-    if (!options_.Reapply()) ShowNotification("小事星球", "窗口置顶未能应用，请在窗口菜单中重试。");
+    if (!options_.Reapply()) ShowNotification("小事星球", "窗口设置未能应用，请在窗口菜单中重试。");
     windowChannel_->InvokeMethod("optionsChanged", std::make_unique<flutter::EncodableValue>(WindowOptionsValue()));
   }
   windowChannel_->InvokeMethod("visibilityChanged", std::make_unique<flutter::EncodableValue>(visible));
@@ -232,6 +241,7 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
     AppendMenuW(menu, MF_STRING, 1, L"打开小事星球");
     AppendMenuW(menu, MF_STRING | (options_.IsCompact() ? MF_CHECKED : MF_UNCHECKED), 3, L"仅显示待办");
     AppendMenuW(menu, MF_STRING | (options_.IsAlwaysOnTop() ? MF_CHECKED : MF_UNCHECKED), 4, L"窗口置顶");
+    AppendMenuW(menu, MF_STRING, 5, L"恢复完全不透明");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 2, L"退出并停止提醒");
     POINT cursor; GetCursorPos(&cursor); SetForegroundWindow(window_);
@@ -239,6 +249,12 @@ std::optional<LRESULT> OfflineBridge::HandleMessage(UINT message, WPARAM wParam,
     DestroyMenu(menu);
     if (selected == 1) ShowWindow();
     if (selected == 2) RequestQuit();
+    if (selected == 5) {
+      RestoreWindowOptions();
+      if (options_.SetOpacity(100)) {
+        windowChannel_->InvokeMethod("optionsChanged", std::make_unique<flutter::EncodableValue>(WindowOptionsValue()));
+      } else ShowNotification("小事星球", "透明度未能恢复，请重试。");
+    }
     if (selected == 3 || selected == 4) {
       const bool compact = selected == 3 ? !options_.IsCompact() : options_.IsCompact();
       const bool top = selected == 4 ? !options_.IsAlwaysOnTop() : options_.IsAlwaysOnTop();

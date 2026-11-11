@@ -52,7 +52,7 @@ cd android
 
 ## 候选版版本和统一回归
 
-发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.6+8`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
+发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.7+9`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
 
 当前模型使用与输入框一致的 `characters` 字符计数。在项目根目录单独编译模型基准时，要提供应用包配置：`dart compile exe --packages=src/small_orbit/.dart_tool/package_config.json scripts/benchmark_model.dart -o .build_cache/benchmark_model`。此前已保存的基线/优化样本源文件不变，旧测量仍按当时源码复现。
 

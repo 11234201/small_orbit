@@ -31,6 +31,7 @@ class WindowService extends ChangeNotifier {
   Future<void> _optionWrites = Future.value();
   bool compact = false;
   bool alwaysOnTop = false;
+  int opacity = 100;
   bool optionsLoaded = false;
   bool get updatingOptions => _pendingOptions > 0;
 
@@ -75,10 +76,18 @@ class WindowService extends ChangeNotifier {
     }
     final nextCompact = options['compact'] as bool;
     final nextTop = options['alwaysOnTop'] as bool;
+    final nextOpacity = options['opacity'] ?? 100;
+    if (nextOpacity is! int || nextOpacity < 30 || nextOpacity > 100) {
+      throw const FormatException('Invalid window opacity');
+    }
     final changed =
-        !optionsLoaded || nextCompact != compact || nextTop != alwaysOnTop;
+        !optionsLoaded ||
+        nextCompact != compact ||
+        nextTop != alwaysOnTop ||
+        nextOpacity != opacity;
     compact = nextCompact;
     alwaysOnTop = nextTop;
+    opacity = nextOpacity;
     optionsLoaded = true;
     if (changed) notifyListeners();
   }
@@ -87,7 +96,13 @@ class WindowService extends ChangeNotifier {
   Future<void> setAlwaysOnTop(bool value) =>
       _writeOption('setAlwaysOnTop', value);
 
-  Future<void> _writeOption(String method, bool value) {
+  Future<void> setOpacity(int value) {
+    if (value < 30 || value > 100)
+      return Future.error(RangeError.range(value, 30, 100));
+    return _writeOption('setOpacity', value);
+  }
+
+  Future<void> _writeOption(String method, Object value) {
     if (!enabled || _disposed || isClosing) return Future.value();
     _pendingOptions++;
     // Invalidate an initial read as soon as a mutation is requested.
