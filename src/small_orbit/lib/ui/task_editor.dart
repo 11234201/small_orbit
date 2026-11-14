@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/task_model.dart';
+import '../core/play_settings.dart';
 
 Future<OrbitTask?> editTask(
   BuildContext context, {
@@ -22,6 +23,8 @@ class TaskEditor extends StatefulWidget {
 
 class _TaskEditorState extends State<TaskEditor> {
   late final TextEditingController _title;
+  final _estimate = TextEditingController();
+  TaskEnergy? _energy;
   DateTime? _date;
   int? _minute;
   RepeatKind _repeat = RepeatKind.none;
@@ -34,6 +37,8 @@ class _TaskEditorState extends State<TaskEditor> {
     super.initState();
     final task = widget.task;
     _title = TextEditingController(text: task?.title ?? widget.title);
+    _estimate.text = task?.estimatedMinutes?.toString() ?? '';
+    _energy = task?.energy;
     _date = task?.date;
     _minute = task?.reminderMinute;
     _repeat = task?.repeat ?? RepeatKind.none;
@@ -44,6 +49,7 @@ class _TaskEditorState extends State<TaskEditor> {
   @override
   void dispose() {
     _title.dispose();
+    _estimate.dispose();
     super.dispose();
   }
 
@@ -51,6 +57,12 @@ class _TaskEditorState extends State<TaskEditor> {
     if (_busy || _closing) return;
     if (_title.text.trim().isEmpty) {
       setState(() => _error = '给这件小事起个名字吧');
+      return;
+    }
+    final estimate = int.tryParse(_estimate.text.trim());
+    if (_estimate.text.trim().isNotEmpty &&
+        (estimate == null || estimate < 1 || estimate > 480)) {
+      setState(() => _error = '预计耗时请填写 1～480 分钟，或留空');
       return;
     }
     final task = widget.task;
@@ -63,6 +75,8 @@ class _TaskEditorState extends State<TaskEditor> {
       repeat: _repeat,
       importance: _importance,
       urgency: _urgency,
+      estimatedMinutes: estimate,
+      energy: _energy,
       records: task?.records ?? {},
     );
     setState(() {
@@ -226,6 +240,51 @@ class _TaskEditorState extends State<TaskEditor> {
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
+              const SizedBox(height: 16),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('耗时与精力（可选）'),
+                subtitle: const Text('帮助扭蛋机挑出适合现在的小事'),
+                children: [
+                  TextField(
+                    controller: _estimate,
+                    enabled: !_busy,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '预计分钟数',
+                      hintText: '1～480，留空为未设置',
+                    ),
+                  ),
+                  Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final value in [5, 15, 30, 60])
+                        ActionChip(
+                          label: Text('$value 分钟'),
+                          onPressed: _busy
+                              ? null
+                              : () => setState(() => _estimate.text = '$value'),
+                        ),
+                    ],
+                  ),
+                  DropdownButtonFormField<TaskEnergy>(
+                    initialValue: _energy,
+                    decoration: const InputDecoration(labelText: '所需精力'),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('未设置')),
+                      for (final energy in TaskEnergy.values)
+                        DropdownMenuItem(
+                          value: energy,
+                          child: Text(energyLabels[energy.index]),
+                        ),
+                    ],
+                    onChanged: _busy
+                        ? null
+                        : (v) => setState(() => _energy = v),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
               if (_busy)
                 const Padding(
                   padding: EdgeInsets.only(top: 12),

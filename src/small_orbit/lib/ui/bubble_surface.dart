@@ -1,12 +1,20 @@
 import 'dart:math';
+
 import 'package:flutter/material.dart';
+
 import '../core/bubble_engine.dart';
+import '../core/play_settings.dart';
 
 /// Only the membrane deforms. Task text, semantics and tap targets stay steady.
 class BubbleSurface extends CustomPainter {
-  BubbleSurface({required this.engine, required this.body, required this.color})
-    : super(repaint: engine);
+  BubbleSurface({
+    required this.engine,
+    required this.body,
+    required this.color,
+    this.material = BubbleMaterial.classic,
+  }) : super(repaint: engine);
 
+  final BubbleMaterial material;
   final BubbleEngine engine;
   final BubbleBody body;
   final Color color;
@@ -17,7 +25,11 @@ class BubbleSurface extends CustomPainter {
     // Reserve room for the elastic rim inside the circular interaction area.
     final r = radius * .92;
     final rect = Rect.fromCircle(center: Offset.zero, radius: r);
-    final tint = HSLColor.fromColor(color);
+    final tint = HSLColor.fromColor(
+      material == BubbleMaterial.water
+          ? Color.lerp(color, const Color(0xffa8dbf5), .55)!
+          : color,
+    );
     final edge = tint.withSaturation(.62).withLightness(.73).toColor();
     canvas.save();
     canvas.translate(size.width / 2, size.height / 2);
@@ -51,8 +63,8 @@ class BubbleSurface extends CustomPainter {
           colors: [
             Color.lerp(color, Colors.white, .86)!,
             Color.lerp(color, Colors.white, .65)!,
-            color.withValues(alpha: .74),
-            edge.withValues(alpha: .55),
+            Color.lerp(color, Colors.white, .12)!,
+            edge,
           ],
           stops: const [0, .55, .82, 1],
         ).createShader(rect),
@@ -110,11 +122,60 @@ class BubbleSurface extends CustomPainter {
         ..strokeWidth = 1.3
         ..strokeCap = StrokeCap.round,
     );
+    if (material == BubbleMaterial.pudding) {
+      canvas.drawArc(
+        Rect.fromCenter(
+          center: Offset(0, -r * .25),
+          width: r * 1.5,
+          height: r * .65,
+        ),
+        pi,
+        pi,
+        false,
+        Paint()
+          ..color = const Color(0xffbd8548).withValues(alpha: .4)
+          ..strokeWidth = r * .1,
+      );
+      canvas.drawCircle(
+        Offset(r * .3, -r * .48),
+        r * .09,
+        Paint()..color = const Color(0xffe8a0a8),
+      );
+    } else if (material == BubbleMaterial.soap) {
+      canvas.drawCircle(
+        Offset.zero,
+        r - 3,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4
+          ..shader = const SweepGradient(
+            colors: [
+              Color(0xffeeb3d3),
+              Color(0xffb3d8ff),
+              Color(0xffb6ecd7),
+              Color(0xffffdf9d),
+              Color(0xffeeb3d3),
+            ],
+          ).createShader(rect),
+      );
+    } else if (material == BubbleMaterial.water) {
+      canvas.drawArc(
+        rect.deflate(r * .15),
+        .2,
+        1.5,
+        false,
+        Paint()
+          ..color = const Color(0xff71b8e0).withValues(alpha: .5)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 5,
+      );
+    }
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant BubbleSurface oldDelegate) =>
+      oldDelegate.material != material ||
       oldDelegate.body != body ||
       oldDelegate.color != color ||
       oldDelegate.engine != engine;

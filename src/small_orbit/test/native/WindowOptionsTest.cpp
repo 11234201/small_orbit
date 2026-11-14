@@ -5,6 +5,13 @@
 #include "WindowOptions.h"
 
 namespace {
+bool blockZOrder = false;
+LRESULT CALLBACK OptionsTestProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_WINDOWPOSCHANGING && blockZOrder) {
+    reinterpret_cast<WINDOWPOS*>(lparam)->flags |= SWP_NOZORDER;
+  }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
 void Check(bool value, const char* description) {
   if (!value) { std::cerr << "FAIL: " << description << '\n'; std::exit(1); }
 }
@@ -33,7 +40,7 @@ int wmain(int argumentCount, wchar_t** arguments) {
   Check(argumentCount == 2, "isolated test directory required");
   Check(SetEnvironmentVariableW(L"SMALL_ORBIT_DATA_DIR", arguments[1]) != FALSE, "set isolated path");
   WNDCLASSW windowClass{};
-  windowClass.lpfnWndProc = DefWindowProcW;
+  windowClass.lpfnWndProc = OptionsTestProc;
   windowClass.hInstance = GetModuleHandleW(nullptr);
   windowClass.lpszClassName = L"SmallOrbitOptionsTest";
   Check(RegisterClassW(&windowClass) != 0, "register hidden window class");
@@ -67,6 +74,7 @@ int wmain(int argumentCount, wchar_t** arguments) {
   std::cout << "PASS: independent reversible native options\n";
   ShowWindow(window, SW_HIDE);
   Check(reopened.SetOptions(true, true), "save topmost while hidden");
+  Check(IsTopmost(window), "hidden pin is applied before it is persisted");
   ShowWindow(window, SW_SHOWNOACTIVATE);
   Check(reopened.Reapply() && IsTopmost(window), "pin reapplies after tray restore");
   Check(reopened.SetOptions(false, false), "restore test baseline");
@@ -96,26 +104,24 @@ int wmain(int argumentCount, wchar_t** arguments) {
   std::cout << "PASS: native failure does not publish new state\n";
   WindowOptions translucent(window);
   translucent.Restore();
-  Check(translucent.SetOpacity(30), "apply whole-window opacity");
-  BYTE alpha = 0;
-  DWORD flags = 0;
-  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77 && flags == LWA_ALPHA,
-        "native alpha matches 30 percent");
+  Check(translucent.SetOpacity(30), "apply background opacity");
+  Check((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0,
+        "background transparency never multiplies foreground alpha");
   Check((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TRANSPARENT) == 0, "opacity does not enable click-through");
   Check(translucent.SetOptions(false, true) && IsTopmost(window), "opacity coexists with normal pinned view");
-  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77, "mode switch preserves alpha");
+  Check((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0, "mode switch preserves foreground opacity");
   WindowOptions restoredOpacity(window);
   restoredOpacity.Restore();
   Check(restoredOpacity.OpacityPercent() == 30 && restoredOpacity.IsAlwaysOnTop(), "opacity survives reopen");
   ShowWindow(window, SW_HIDE);
   ShowWindow(window, SW_SHOWNOACTIVATE);
-  Check(restoredOpacity.Reapply() && GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77,
+  Check(restoredOpacity.Reapply() && (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0,
         "opacity reapplies on show");
   std::cout << "PASS: alpha, interaction, pin, mode and restart preservation\n";
 
   Check(CreateDirectoryW(pending.c_str(), nullptr) != FALSE, "block opacity persistence");
   Check(!restoredOpacity.SetOpacity(75) && restoredOpacity.OpacityPercent() == 30, "failed opacity write preserves preference");
-  Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && alpha == 77, "failed opacity write rolls back alpha");
+  Check((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) == 0, "failed opacity write preserves per-pixel compositing");
   Check(RemoveDirectoryW(pending.c_str()) != FALSE, "remove opacity blocker");
   Check(restoredOpacity.SetOpacity(75), "opacity retry succeeds");
   Check(!restoredOpacity.SetOpacity(0) && !restoredOpacity.SetOpacity(101) && restoredOpacity.OpacityPercent() == 75,
@@ -135,6 +141,40 @@ int wmain(int argumentCount, wchar_t** arguments) {
   }
   Check(GetForegroundWindow() != window, "opacity never activates the test window");
   std::cout << "PASS: legacy preferences and corrupt opacity recovery\n";
+
+  ShowWindow(window, SW_HIDE);
+  blockZOrder = true;
+  Check(!legacy.SetOptions(true, true), "acknowledged but ignored hidden pin fails");
+  Check(!legacy.IsCompact() && !legacy.IsAlwaysOnTop() && HasCaption(window) && !IsTopmost(window),
+        "ignored hidden pin rolls back without publishing preferences");
+  blockZOrder = false;
+  Check(legacy.SetOptions(true, true) && IsTopmost(window), "hidden pin retries after native recovery");
+  ShowWindow(window, SW_SHOWNOACTIVATE);
+  Check(legacy.Reapply() && IsTopmost(window), "recovered pin survives show");
+  std::cout << "PASS: ignored hidden Z-order request is rejected and recoverable\n";
+
+  const HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, windowClass.lpszClassName,
+      L"Offscreen owner", WS_OVERLAPPEDWINDOW, outsideX, outsideY, 440, 700,
+      nullptr, nullptr, windowClass.hInstance, nullptr);
+  Check(owner != nullptr, "create isolated owner");
+  Check(SetWindowPos(owner, HWND_TOPMOST, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW) != FALSE &&
+      IsTopmost(owner), "pin isolated owner");
+  const HWND owned = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, windowClass.lpszClassName,
+      L"Offscreen owned options", WS_OVERLAPPEDWINDOW, outsideX, outsideY, 440, 700,
+      owner, nullptr, windowClass.hInstance, nullptr);
+  Check(owned != nullptr && GetWindow(owned, GW_OWNER) == owner, "create owned test window");
+  ShowWindow(owned, SW_SHOWNOACTIVATE);
+  WindowOptions ownedOptions(owned);
+  Check(ownedOptions.SetOptions(false, false) && !IsTopmost(owned) && IsTopmost(owner),
+        "unpin owned window without demoting owner");
+  Check(ownedOptions.SetOptions(false, true) && IsTopmost(owned) && IsTopmost(owner),
+        "pin owned window without changing owner");
+  Check(GetForegroundWindow() != owned && GetForegroundWindow() != owner,
+        "owner and owned window never activate");
+  DestroyWindow(owned);
+  DestroyWindow(owner);
+  std::cout << "PASS: pin and unpin preserve owner Z order and focus\n";
   DestroyWindow(window);
   UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
   return 0;

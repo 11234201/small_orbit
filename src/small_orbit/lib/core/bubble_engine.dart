@@ -1,7 +1,10 @@
 import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+
 import 'task_model.dart';
+import 'play_settings.dart';
 
 class BubbleBody {
   BubbleBody(this.id, this.radius, this.position, this.velocity)
@@ -16,6 +19,9 @@ class BubbleBody {
   Offset strain = Offset.zero;
   Offset strainVelocity = Offset.zero;
   double breath = 0;
+  Offset? destination;
+  double destinationAge = 0;
+  double throwRemaining = 0;
   final Set<String> holds = {};
   bool get held => holds.isNotEmpty;
 }
@@ -26,20 +32,45 @@ class BubbleEngine extends ChangeNotifier {
   MotionMode motion = MotionMode.opening;
   bool paused = false;
   double elapsed = 0;
+  GravityStyle gravity = GravityStyle.weightless;
+  BubbleMaterial material = BubbleMaterial.classic;
+  Offset? attraction;
+  void attract(Offset? point) {
+    if (point == attraction) return;
+    if (point != null && (paused || !point.dx.isFinite || !point.dy.isFinite))
+      return;
+    final wasActive = attraction != null;
+    attraction = point;
+    if (point == null && wasActive) {
+      for (final body in bodies) {
+        if (!body.held) body.throwRemaining = 2;
+      }
+    }
+    notifyListeners();
+  }
+
   String _signature = '';
   final Random _random = Random(73);
   bool get moving =>
       !paused &&
       !size.isEmpty &&
       bodies.any((body) => !body.held) &&
-      (motion != MotionMode.opening || elapsed < 6.5);
+      (attraction != null ||
+          motion != MotionMode.opening ||
+          elapsed < 6.5 ||
+          bodies.any((body) => !body.held && body.throwRemaining > 0));
   void configure(
     List<TaskOccurrence> tasks,
     Size bounds,
     MotionMode mode,
     bool stop, {
     int? capacity,
+    GravityStyle gravityStyle = GravityStyle.weightless,
+    BubbleMaterial bubbleMaterial = BubbleMaterial.classic,
   }) {
+    gravity = gravityStyle;
+    material = bubbleMaterial;
+    if (stop) attraction = null;
     final taskSignature = tasks
         .map((task) => '${task.identity}:${task.task.priority}')
         .join('|');
@@ -89,6 +120,7 @@ class BubbleEngine extends ChangeNotifier {
         );
       }
       if (retained != null && previousSize != bounds && !previousSize.isEmpty) {
+        body.destination = null;
         body.position = Offset(
           body.position.dx * bounds.width / previousSize.width,
           body.position.dy * bounds.height / previousSize.height,
@@ -138,6 +170,65 @@ class BubbleEngine extends ChangeNotifier {
     }
   }
 
+  void dragTo(String id, Offset position) {
+    final body = bodies.where((body) => body.id == id).firstOrNull;
+    if (body == null || !position.dx.isFinite || !position.dy.isFinite) return;
+    body.position = position;
+    body.velocity = Offset.zero;
+    body.throwRemaining = 0;
+    body.destination = null;
+    _wall(body, feedback: false);
+    notifyListeners();
+  }
+
+  void release(String id, Offset velocity) {
+    final body = bodies.where((body) => body.id == id).firstOrNull;
+    if (body == null) return;
+    body.destination = null;
+    body.throwRemaining = 0;
+    body.velocity = Offset.zero;
+    if (!paused && velocity.dx.isFinite && velocity.dy.isFinite) {
+      // Pointer velocities can be thousands of pixels/second. Keep a throw
+      // playful but readable, and do not restart every other settled bubble.
+      final speed = min(velocity.distance * .45, 260.0);
+      if (speed >= 12) {
+        body.velocity = velocity / velocity.distance * speed;
+        body.throwRemaining = 3;
+      }
+    }
+    notifyListeners();
+  }
+
+  Offset _cruise(BubbleBody body, double dt) {
+    body.destinationAge += dt;
+    if (body.destination == null ||
+        (body.destination! - body.position).distance < 24 ||
+        body.destinationAge > 50) {
+      // Prefer far destinations so gentle motion explores the whole stage,
+      // rather than tracing a short periodic orbit around the starting cell.
+      var farthest = body.position;
+      for (var i = 0; i < 8; i++) {
+        final candidate = Offset(
+          body.radius +
+              _random.nextDouble() * max(0, size.width - 2 * body.radius),
+          body.radius +
+              _random.nextDouble() * max(0, size.height - 2 * body.radius),
+        );
+        if ((candidate - body.position).distance >
+            (farthest - body.position).distance)
+          farthest = candidate;
+      }
+      body.destination = farthest;
+      body.destinationAge = 0;
+    }
+    final delta = body.destination! - body.position;
+    if (delta.distance < .001) return Offset.zero;
+    final direction = delta / delta.distance;
+    return direction * (19 + 3 * sin(body.phase)) +
+        Offset(-direction.dy, direction.dx) *
+            (3 * sin(elapsed * .18 + body.phase));
+  }
+
   void step(double seconds) {
     if (!moving || !seconds.isFinite || seconds <= 0) return;
     // Stable on both 30 Hz phones and high-refresh displays. A resumed window
@@ -158,25 +249,75 @@ class BubbleEngine extends ChangeNotifier {
         : 1.0;
     for (final body in bodies) {
       if (body.held) continue;
+      final throwing = body.throwRemaining > 0;
+      if (motion == MotionMode.opening &&
+          elapsed > 6.5 &&
+          !throwing &&
+          attraction == null)
+        continue;
       final flow = Offset(
         sin(elapsed * .67 + body.phase) +
             .35 * cos(elapsed * 1.13 - body.phase),
         .78 * cos(elapsed * .53 + body.phase * 1.7),
       );
-      final acceleration = motion == MotionMode.gentle ? 11.0 : 25.0;
-      body.velocity += flow * acceleration * envelope * dt;
-      final drag = motion == MotionMode.opening
-          ? .62 + 1.3 * (1 - envelope)
-          : .30;
-      body.velocity *= exp(-drag * dt);
-      final limit = motion == MotionMode.gentle ? 27.0 : 120.0;
+      if (throwing) {
+        body.throwRemaining = max(0, body.throwRemaining - dt);
+        body.velocity *= exp(-1.15 * dt);
+      } else if (motion == MotionMode.gentle) {
+        body.velocity +=
+            (_cruise(body, dt) - body.velocity) * (1 - exp(-.65 * dt));
+      } else {
+        body.velocity += flow * 25 * envelope * dt;
+        final drag = motion == MotionMode.opening
+            ? .62 + 1.3 * (1 - envelope)
+            : .30;
+        body.velocity *= exp(-drag * dt);
+      }
+      final center = attraction;
+      if (center != null) {
+        final delta = center - body.position;
+        final distance = delta.distance;
+        if (distance > .01) {
+          final normal = delta / distance;
+          final orbitRadius = body.radius + 38;
+          final radial = ((distance - orbitRadius) * 1.8).clamp(-120.0, 180.0);
+          body.velocity +=
+              (normal * radial + Offset(-normal.dy, normal.dx) * 85) * dt;
+          body.velocity *= exp(-.5 * dt);
+        }
+      } else if (gravity == GravityStyle.moon) {
+        body.velocity += Offset(0, 38 * dt);
+      } else if (gravity == GravityStyle.jelly) {
+        body.velocity *= exp(-.5 * dt);
+      }
+      final limit = center != null
+          ? 150.0
+          : throwing
+          ? 260.0
+          : motion == MotionMode.gentle
+          ? 27.0
+          : 120.0;
       if (body.velocity.distance > limit) {
         body.velocity = body.velocity / body.velocity.distance * limit;
       }
       body.position += body.velocity * dt;
       _wall(body);
       body.strainVelocity +=
-          (body.strain * -155 - body.strainVelocity * 13) * dt;
+          (body.strain *
+                  (material == BubbleMaterial.pudding ||
+                          gravity == GravityStyle.jelly
+                      ? -85
+                      : -155) -
+              body.strainVelocity *
+                  (material == BubbleMaterial.pudding ? 7 : 13)) *
+          dt;
+      if (material == BubbleMaterial.water && body.velocity.distance > 1) {
+        final angle = atan2(body.velocity.dy, body.velocity.dx);
+        body.strainVelocity +=
+            Offset(cos(2 * angle), sin(2 * angle)) *
+            min(body.velocity.distance / 80, 2) *
+            dt;
+      }
       body.strain += body.strainVelocity * dt;
       if (body.strain.distance > .075) {
         body.strain = body.strain / body.strain.distance * .075;
@@ -188,9 +329,10 @@ class BubbleEngine extends ChangeNotifier {
         _collide(bodies[i], bodies[j], dt);
       }
     }
-    if (motion == MotionMode.opening && elapsed >= 6.5) {
+    if (motion == MotionMode.opening && elapsed >= 6.5 && attraction == null) {
       elapsed = 6.5;
       for (final body in bodies) {
+        if (body.throwRemaining > 0) continue;
         body.velocity = Offset.zero;
         body.strain = Offset.zero;
         body.strainVelocity = Offset.zero;

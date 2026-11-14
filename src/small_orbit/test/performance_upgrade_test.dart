@@ -142,16 +142,13 @@ void main() {
           '2024-02-29': null,
           '2024-03-01': null,
         });
-        expect(
-          BackupCodec.decode(await store.previous.readAsString()).toJson(),
-          jsonDecode(payload),
-        );
+        expect(await store.previous.readAsString(), source);
         final exported = BackupCodec.decode(BackupCodec.encode(updated));
         expect(exported.toJson(), updated.toJson());
         expect((await LocalStore(directory).load()).toJson(), updated.toJson());
         expect(
           (jsonDecode(await store.current.readAsString()) as Map)['version'],
-          1,
+          BackupCodec.currentVersion,
         );
       } finally {
         controller.dispose();

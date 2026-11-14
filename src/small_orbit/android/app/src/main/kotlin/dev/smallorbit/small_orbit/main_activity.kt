@@ -13,6 +13,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var feedbackTone: android.media.ToneGenerator? = null
+    private var lastFeedback = 0L
     private var permissionReply: MethodChannel.Result? = null
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -21,6 +23,19 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
+                        "syncFocus" -> { FocusScheduler.update(this, call.arguments as? Map<*, *>); result.success(null) }
+                        "showFocusNotification" -> {
+                            FocusScheduler.deliver(this, call.argument<String>("id") ?: ""); result.success(null)
+                        }
+                        "playFeedback" -> {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastFeedback > 150) {
+                                lastFeedback = now
+                                val tone = feedbackTone ?: android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 18).also { feedbackTone = it }
+                                tone.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 65)
+                            }
+                            result.success(null)
+                        }
                         "syncReminders" -> {
                             ReminderScheduler.update(this, call.arguments as String)
                             result.success(null)
@@ -65,7 +80,12 @@ class MainActivity : FlutterActivity() {
             permissionReply?.success(null)
             permissionReply = null
             ReminderScheduler.scheduleAll(this)
+            try { FocusScheduler.schedule(this) } catch (error: Exception) { android.util.Log.e("SmallOrbit", "Focus scheduling failed", error) }
         }
     }
-    override fun onResume() { super.onResume(); ReminderScheduler.scheduleAll(this) }
+    override fun onResume() {
+        super.onResume(); ReminderScheduler.scheduleAll(this)
+        try { FocusScheduler.schedule(this) } catch (error: Exception) { android.util.Log.e("SmallOrbit", "Focus scheduling failed", error) }
+    }
+    override fun onDestroy() { feedbackTone?.release(); feedbackTone = null; super.onDestroy() }
 }

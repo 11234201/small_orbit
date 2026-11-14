@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'task_model.dart';
 import 'local_store.dart';
+import 'completion_collection.dart';
 
 class OrbitController extends ChangeNotifier {
   OrbitController(this.store, {DateTime Function()? clock})
@@ -18,6 +19,7 @@ class OrbitController extends ChangeNotifier {
   String? undoLabel;
   String? notice;
   String? _startupRolloverNotice;
+  int restoreGeneration = 0;
   bool get canUndo => _undoId != null;
 
   Future<void> initialize() async {
@@ -79,6 +81,7 @@ class OrbitController extends ChangeNotifier {
   }
 
   Future<void> _publish(OrbitDocument next) async {
+    next = next.copyWith(memories: reconcileMemories(document, next, clock()));
     await store.save(next);
     document = next;
     notifyListeners();
@@ -201,6 +204,33 @@ class OrbitController extends ChangeNotifier {
     notifyListeners();
   });
 
+  Future<void> moveDecoration(String id, double x, double y) => _enqueue(
+    () => _publish(
+      document.copyWith(
+        islandLayout: {
+          ...document.islandLayout,
+          id: [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)],
+        },
+      ),
+    ),
+  );
+  Future<void> tidyIsland() =>
+      _enqueue(() => _publish(document.copyWith(islandLayout: {})));
+  Future<void> clearAnonymousMemories() => _enqueue(() async {
+    final ids = document.tasks.map((t) => t.id).toSet();
+    await _publish(
+      document.copyWith(
+        memories: document.memories
+            .where((m) => ids.contains(m.taskId))
+            .toList(),
+      ),
+    );
+    _undoTask = null;
+    _undoId = null;
+    undoLabel = null;
+    notifyListeners();
+  });
+
   Future<void> settings(AppSettings settings) =>
       _enqueue(() => _publish(document.copyWith(settings: settings)));
 
@@ -230,6 +260,7 @@ class OrbitController extends ChangeNotifier {
     final next = incoming.materialize(clock());
     final backup = await store.restore(next, document);
     document = next;
+    restoreGeneration++;
     _undoId = null;
     undoLabel = null;
     notice = '恢复完成。替换前数据已备份：${backup.uri.pathSegments.last}';

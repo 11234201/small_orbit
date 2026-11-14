@@ -44,6 +44,22 @@ OfflineBridge::OfflineBridge(HWND window, flutter::BinaryMessenger* messenger)
           {flutter::EncodableValue("exact"), flutter::EncodableValue(false)}}));
     } else if (method == "requestNotifications" || method == "requestExactAlarms" || method == "syncReminders") {
       result->Success();
+    } else if (method == "syncFocus") {
+      // The running Flutter process owns the timer on Windows, including tray mode.
+      result->Success();
+    } else if (method == "playFeedback") {
+      const auto now = GetTickCount64();
+      if (now - lastFeedback_ > 150) { MessageBeep(MB_OK); lastFeedback_ = now; }
+      result->Success();
+    } else if (method == "showFocusNotification") {
+      const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
+      if (!arguments) { result->Error("ARGUMENT", "Missing focus id"); return; }
+      const auto id = ReadString(*arguments, "id");
+      if (id.empty()) { result->Error("ARGUMENT", "Missing focus id"); return; }
+      if (lastFocusNotification_ == id) { result->Success(); return; }
+      if (ShowNotification(u8"小事星球 · 专注结束", u8"这一段专注结束了，回来看看你的进度。")) {
+        lastFocusNotification_ = id; result->Success();
+      } else result->Error("NOTIFICATION", "System tray is unavailable");
     } else if (method == "showNotification") {
       const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
       if (!arguments) { result->Error("ARGUMENT", "Missing notification text"); return; }

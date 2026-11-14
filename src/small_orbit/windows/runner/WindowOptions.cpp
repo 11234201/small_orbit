@@ -1,6 +1,7 @@
 #include "WindowOptions.h"
 
 #include <shlobj.h>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -21,13 +22,37 @@ int WindowOptions::OpacityPercent() const { return opacity_; }
 bool WindowOptions::Reapply() { return Apply(compact_, alwaysOnTop_, opacity_); }
 
 bool WindowOptions::ApplyOpacity(int percent) {
+  // Flutter paints the background alpha; task surfaces stay fully opaque.
+  // Global LWA_ALPHA would multiply every pixel, including text and papers.
+  struct AccentPolicy {
+    int m_state;
+    int m_flags;
+    int m_color;
+    int m_animation;
+  };
+  struct CompositionData {
+    int m_attribute;
+    void* m_data;
+    SIZE_T m_size;
+  };
+  using SetComposition = BOOL(WINAPI*)(HWND, CompositionData*);
+  const auto module = GetModuleHandleW(L"user32.dll");
+  const auto address = module ? GetProcAddress(module, "SetWindowCompositionAttribute") : nullptr;
+  SetComposition setComposition = nullptr;
+  static_assert(sizeof(setComposition) == sizeof(address));
+  std::memcpy(&setComposition, &address, sizeof(address));
+  // Windows 10/11 support transparent client compositing. If unavailable,
+  // report failure instead of silently fading the foreground again.
+  if (!setComposition) return percent == 100;
   const LONG_PTR previous = GetWindowLongPtrW(window_, GWL_EXSTYLE);
-  const LONG_PTR next = percent == 100 ? previous & ~static_cast<LONG_PTR>(WS_EX_LAYERED)
-                                      : previous | WS_EX_LAYERED;
+  const LONG_PTR next = previous & ~static_cast<LONG_PTR>(WS_EX_LAYERED);
   SetLastError(ERROR_SUCCESS);
   if (SetWindowLongPtrW(window_, GWL_EXSTYLE, next) == 0 && GetLastError() != ERROR_SUCCESS) return false;
-  if (percent < 100 && !SetLayeredWindowAttributes(window_, 0,
-      static_cast<BYTE>((percent * 255 + 50) / 100), LWA_ALPHA)) {
+  // WCA_ACCENT_POLICY / ACCENT_ENABLE_TRANSPARENTGRADIENT. This exposes
+  // Flutter's per-pixel alpha without enabling pointer click-through.
+  AccentPolicy policy{percent < 100 ? 2 : 0, 2, 0, 0};
+  CompositionData data{19, &policy, sizeof(policy)};
+  if (!setComposition(window_, &data)) {
     SetWindowLongPtrW(window_, GWL_EXSTYLE, previous);
     return false;
   }
@@ -58,18 +83,16 @@ bool WindowOptions::Apply(bool compact, bool alwaysOnTop, int opacity) {
   if (SetWindowLongPtrW(window_, GWL_STYLE, style) == 0 && GetLastError() != ERROR_SUCCESS) return false;
   // Keep the thick resize frame and never activate another app's background
   // window just because the user changes its stacking preference.
-  const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+  // Change only this window's Z order. Letting SetWindowPos reposition an
+  // owner can acknowledge HWND_TOPMOST without changing this window's band.
+  // Repeating that request does not repair it (observed on Windows 10).
+  const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
   const HWND order = alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
-  bool positioned = SetWindowPos(window_, order, 0, 0, 0, 0, flags) != FALSE;
-  // A newly shown window can acknowledge a Z-order request without applying it.
-  // Retry once, then still require the actual visible style to match.
-  if (positioned && IsWindowVisible(window_) &&
-      (((GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) != alwaysOnTop)) {
-    positioned = SetWindowPos(window_, order, 0, 0, 0, 0, flags) != FALSE;
-  }
+  const bool positioned = SetWindowPos(window_, order, 0, 0, 0, 0, flags) != FALSE;
+  // A successful API return alone is insufficient, including while hidden.
   if (positioned &&
-      (!IsWindowVisible(window_) ||
-       ((GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) == alwaysOnTop) &&
+      (((GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0) == alwaysOnTop) &&
       ApplyOpacity(opacity)) return true;
   SetWindowLongPtrW(window_, GWL_STYLE, oldStyle);
   SetWindowPos(window_, wasTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, flags);

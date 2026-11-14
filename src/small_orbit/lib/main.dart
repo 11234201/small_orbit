@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'ui/window_opacity_panel.dart';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:path_provider/path_provider.dart';
+
 import 'core/local_store.dart';
 import 'core/orbit_controller.dart';
 import 'core/task_model.dart';
@@ -15,6 +16,9 @@ import 'ui/settings_panel.dart';
 import 'ui/task_editor.dart';
 import 'ui/task_stage.dart';
 import 'ui/startup_recovery.dart';
+import 'ui/window_opacity_panel.dart';
+import 'ui/playground_panel.dart';
+import 'platform/focus_service.dart';
 
 WindowService? _windowService;
 
@@ -42,17 +46,35 @@ Future<void> startApplication() async {
     } catch (_) {
       controller.notice = '提醒暂未就绪，可在设置中检查权限。';
     }
+    final focus = FocusService(controller);
+    await focus.start();
     final loadedController = controller;
     _windowService?.dispose();
     final window = WindowService(
       onPrepareToQuit: () async {
-        await loadedController.closeWrites(afterDrain: reminders.stop);
+        try {
+          await loadedController.closeWrites(
+            afterDrain: () async {
+              await focus.stop();
+              await reminders.stop();
+            },
+          );
+        } catch (_) {
+          focus.resumeClock();
+          rethrow;
+        }
+        focus.dispose();
         reminders.dispose();
       },
     )..register();
     _windowService = window;
     runApp(
-      OrbitApp(controller: controller, reminders: reminders, window: window),
+      OrbitApp(
+        controller: controller,
+        reminders: reminders,
+        window: window,
+        focus: focus,
+      ),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(
@@ -90,10 +112,12 @@ class OrbitApp extends StatelessWidget {
     required this.controller,
     required this.reminders,
     this.window,
+    this.focus,
   });
   final OrbitController controller;
   final ReminderService reminders;
   final WindowService? window;
+  final FocusService? focus;
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: '小事星球',
@@ -161,6 +185,7 @@ class OrbitApp extends StatelessWidget {
       controller: controller,
       reminders: reminders,
       window: window,
+      focus: focus,
     ),
   );
 }
@@ -171,10 +196,12 @@ class OrbitHome extends StatefulWidget {
     required this.controller,
     required this.reminders,
     this.window,
+    this.focus,
   });
   final OrbitController controller;
   final ReminderService reminders;
   final WindowService? window;
+  final FocusService? focus;
   @override
   State<OrbitHome> createState() => _OrbitHomeState();
 }
@@ -185,12 +212,15 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   final FocusNode _pageFocus = FocusNode(debugLabel: 'todo surface');
   final GlobalKey _stageKey = GlobalKey();
   bool _wasCompact = false;
+  late final FocusService _focus;
   bool _today = true, _adding = false, _editing = false;
   int _replay = 0;
   OrbitController get controller => widget.controller;
   @override
   void initState() {
     super.initState();
+    _focus = widget.focus ?? FocusService(controller);
+    if (widget.focus == null) unawaited(_focus.start());
     _wasCompact = _compact;
     WidgetsBinding.instance.addObserver(this);
     widget.reminders.addListener(_reminderChanged);
@@ -206,6 +236,7 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     widget.reminders.removeListener(_reminderChanged);
     widget.window?.removeListener(_windowChanged);
+    if (widget.focus == null) _focus.dispose();
     _quick.dispose();
     _quickFocus.dispose();
     _pageFocus.dispose();
@@ -244,6 +275,8 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
     onSelected: (value) => _safe(() async {
       final window = widget.window!;
       switch (value) {
+        case 'play':
+          await _play();
         case 'compact':
           _quickFocus.unfocus();
           await window.setCompact(!window.compact);
@@ -266,6 +299,7 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
       }
     }),
     itemBuilder: (_) => [
+      const PopupMenuItem(value: 'play', child: Text('玩法与小世界')),
       CheckedPopupMenuItem(
         value: 'compact',
         checked: _compact,
@@ -309,14 +343,53 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
     ],
   );
 
-  Widget _taskStage(List<TaskOccurrence> items, AppSettings settings) =>
+  Future<void> _play({int page = 0, TaskOccurrence? selected}) =>
+      Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => PlaygroundPanel(
+            controller: controller,
+            focus: _focus,
+            initialPage: page,
+            initialTask: selected,
+          ),
+        ),
+      );
+
+  Future<void> _complete(TaskOccurrence item) async {
+    final before = controller.document.activeMemories.length;
+    await controller.complete(item);
+    if (controller.document.activeMemories.length > before)
+      await _focus.feedback();
+  }
+
+  Widget _taskStage(List<TaskOccurrence> items, AppSettings settings) {
+    final stars = controller.document.memories
+        .where((m) => m.day == dayKey(controller.clock()))
+        .take(constellationPageSize)
+        .toList();
+    return Stack(
+      children: [
+        if (stars.isNotEmpty)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: ConstellationPainter(stars, background: false),
+              ),
+            ),
+          ),
+        Positioned.fill(child: _taskStageContent(items, settings)),
+      ],
+    );
+  }
+
+  Widget _taskStageContent(List<TaskOccurrence> items, AppSettings settings) =>
       TaskStage(
         key: _stageKey,
         items: items,
         settings: settings,
         replay: _replay,
         minimalChrome: _compact,
-        onComplete: controller.complete,
+        onComplete: _complete,
         onEdit: _menu,
         onDelete: (task) => _safe(() => controller.delete(task.id)),
       );
@@ -371,6 +444,7 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(widget.reminders.tick(forceSync: true));
+      unawaited(_focus.retryNotifications());
       setState(() => _replay++);
     }
   }
@@ -468,6 +542,12 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                 onTap: () => Navigator.pop(context, 'edit'),
               ),
               ListTile(
+                leading: const Icon(Icons.track_changes),
+                title: const Text('专注这件事'),
+                onTap: () => Navigator.pop(context, 'focus'),
+              ),
+              ListTile(
+                subtitle: const Text('已获得的星星和装饰将作为匿名纪念保留'),
                 leading: const Icon(Icons.delete_outline),
                 title: Text(
                   task.repeat == RepeatKind.none ? '删除任务' : '删除整个重复任务',
@@ -480,6 +560,13 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
       ),
     );
     if (!mounted) return;
+    if (action == 'focus') {
+      final item = controller.document
+          .active(controller.clock(), todayOnly: false)
+          .where((i) => i.task.id == task.id)
+          .firstOrNull;
+      if (item != null) await _play(page: 2, selected: item);
+    }
     if (action == 'edit') await _edit(task: task);
     if (action == 'delete') await _safe(() => controller.delete(task.id));
   }
@@ -605,6 +692,11 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
               todayOnly: _today,
             );
             return Scaffold(
+              backgroundColor: const Color(0xfffcfaf7).withValues(
+                alpha: (widget.window?.enabled ?? false)
+                    ? widget.window!.opacity / 100
+                    : 1,
+              ),
               body: SafeArea(
                 child: _compact
                     ? _compactBody(items, settings)
@@ -624,11 +716,21 @@ class _OrbitHomeState extends State<OrbitHome> with WidgetsBindingObserver {
                                   const Expanded(
                                     child: Text(
                                       '小事星球',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 22,
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
+                                  ),
+                                  IconButton(
+                                    tooltip: '玩法与小世界',
+                                    onPressed: () => _play(),
+                                    icon: const Icon(
+                                      Icons.auto_awesome_outlined,
+                                    ),
+                                    visualDensity: VisualDensity.compact,
                                   ),
                                   IconButton(
                                     tooltip: '完成与漏做历史',

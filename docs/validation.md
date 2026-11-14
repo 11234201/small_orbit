@@ -1,5 +1,43 @@
 # 验证记录
 
+## 2026-11-14：rc.10 专注与通知继续检视
+
+- 检视并修复六处边界：保存期间目标/备份变化、重开过期会话漏查失效目标、换任务仍显示旧完成状态、结束保存失败后仍切页、Android finished 通知无法重试、Windows 提示缺少补发与跨重开回执。详情和证据见 [本轮检视](reviews/rc10_focus_review.md)。
+- 新增 9 个 Flutter、2 个 Android JVM 用例；最终静态分析无问题、完整 **163 项 Flutter 通过、29 项 Android JVM 重新执行通过**。最终共享源码目录仍为远端 `.build_cache/fun_features_20261114`，日志 `rc10_flutter_final.log`、`rc10_analyze_final.log` 与 `rc10_final_2/android_tests.log`。
+- 首轮测试夹具中的计时文本格式、默认平台差异及多余导入已修正，保留失败日志。补发联测新增目标完成后的取消检查，修复后进入最终全量回归。
+- Windows 原生代码未变，18 项原生结果沿用 rc.9；本轮重建 rc.10，并以独立数据对实际 Release 做置顶/非置顶、简洁状态、两轮隐藏恢复、不抢焦点、偏好持久化和正常退出检查。Android 两种 APK 沿用原签名重建；包校验及摘要见 [rc.10 说明](releases/v1.0.0-rc.10.md)。
+- 真机/多屏/透明视觉合成与长期使用仍保留待验，不把平台模拟或 JVM 测试写成实机送达证明。
+
+## 2026-11-14：rc.9 置顶修复与检视回归
+
+- 旧实现置顶复现失败；对照首个请求、重复请求、消息等待、边框刷新及 `SWP_NOOWNERZORDER`，确认后者使实际置顶样式生效。修复保留非激活行为和失败回滚，并对隐藏窗口同样核查真实状态。
+- 最终 Windows 原生 **18 项通过**，含原有 16 项及所有者 Z 序不变、隐藏请求被忽略后不保存错误状态两组。日志 `logs/topmost_repro_20261114.log`、`topmost_probe_sequences.log`、`rc9_native_final.log`。
+- 新 Windows Release 包的置顶/非置顶各一次隔离启动通过，标题栏符合简洁选项；两轮屏幕外隐藏/显示保持状态，不抢焦点，偏好保留，正常退出。脚本 `scripts/verify_windows_options.ps1`，日志 `logs/rc9_windows_options_release.log`。用户数据与已有应用进程未被操作。
+- 原生验证通过后检视玩法、存储与退出链路，修复恢复副本升级时未永久保留旧原件、旧专注计时事件误作用新会话、退出吞掉待保存失败，以及小岛拖动重复扫描收藏。新增 4 个行为用例均先在旧实现失败，再在修复后通过。
+- 远端 `logs/rc9_final` 静态分析无问题、完整 **154 项 Flutter、27 项 Android JVM 检查通过**。Android JVM 任务因原生源码未变为 UP-TO-DATE，复用先前 27 项通过结果，本轮未重跑。Windows 与 Android 包均重建为 rc.9+11，继续沿用原签名和格式 2。详见 [检视记录](reviews/rc9_topmost_review.md) 与 [rc.9 说明](releases/v1.0.0-rc.9.md)。
+- 下面 rc.8 的失败记录作为历史保留；Windows 10 的本次置顶检查已关闭。Android 真机、Windows 11、多屏、透明视觉合成和连续使用仍待设备验收。
+
+## 2026-11-14：rc.8 六种玩法候选
+
+- 远端隔离目录 `/home/wzh/my_code/todo_list/.build_cache/fun_features_20261114`；基线共享检查通过，原工程保留。共享检查 `logs/fun_final_4` 静态分析无问题、149 项 Flutter 回归通过、27 项 Android JVM 检查通过（原有 24 项加专注调度 3 项）。之后星图仅绘制布局调整，通过静态分析、4 项相关页面回归与实际渲染；另补小岛摆放/备份/撤销交叉用例，最终完整 Flutter 回归 **150 项全部通过**，日志 `logs/flutter_final_150.log`。
+- 新回归覆盖：完成失败不发纪念、撤销重做与周期转换去重、删除匿名化/撤销、反复恢复备份、升级前字节保全、合法旧完成日期、小岛位置与成长独立；条件过滤与无重复抽取；36 种物理/材质/节奏组合的边界；空白引力手势取消无误完成；专注暂停/重开/过期/目标变化/导入终止；五个页面在 260×300、390×720、900×760 及 1.8 倍字号下无溢出。
+- 首次失败与修复：格式升级测试仍要求格式 1；启动恢复在遇到坏字节时被新增升级检查阻断；专注数字在窄窗大字号下溢出；星图增加分页后分页文字溢出。均保留失败日志，修复后相应回归通过。实际 Flutter 渲染使用示例数据和系统字体，五页 PNG 已检查，位于 `preview/fun_features/`。
+- 容量边界：10,000 任务、250,000 条完成历史（含长标题与较长 ID）保留全部记录，格式 2 约 86.78 MB，有限上限 128 MiB；远端测试模式模型/编码/解码约 15.97 秒，不代表界面启动速度。常规数据 AOT 前后对照见性能记录。
+- Windows Release 使用本机既有 Flutter/MSVC 构建成功。Windows 便携 ZIP 的版本、CRC、引擎、AOT、CRT、使用说明和许可证校验通过；Android 两个 Release 包使用原签名，版本名 rc.8、版本码 10、ABI、SDK、CRC、16 KB 对齐、无 INTERNET 权限检查通过。包摘要见 `releases/v1.0.0-rc.8.md` 与 `dist/SHA256SUMS-1.0.0-rc.8.txt`。
+- Windows 专有启动检查：0/100/1000 任务各 1 次、独立 `.qa_data/windows_probe_*`、隐藏启动、正常退出全部成功；未操作用户任务。见 `logs/rc8_windows_smoke.log` 和 `logs/windows_probe_1.0.0-rc.8.json`。此检查在最后星图绘制调整前执行，不等于完整可见 GUI 验收；最终源码已重新构建、打包和校验，日志 `logs/rc8_windows_build_final.log`、`logs/rc8_windows_package_final.log`。
+- **未通过的原生检查**：位置/尺寸组 6 项通过；窗口选项组在首项“set compact and topmost”失败，后续项未执行。隔离诊断观察到 `SetWindowPos` 返回成功，但 `WS_EX_TOPMOST` 仍为 false，`GetLastError=1816`；进程 Job UI restrictions 查询为 0。`WindowOptions.cpp` 与测试源相对本轮开始逐字（统一换行）一致，未为了让测试通过修改应用置顶实现。原因仍需在真实桌面环境进一步确认，不能宣称 16 项原生检查通过。
+- 尚未验收：Android 厂商后台/锁屏/重启提示、通知实际可见性、触觉和声音；Windows 真实背景透明合成、置顶和多屏；真机覆盖安装与连续一周使用。长休眠与系统时钟异常的专注恢复需随设备矩阵验证；当前检测到明显时钟差异会暂停并提示。候选版未公开发布。
+- 最终本地与远端 126 项应用源码、测试及脚本摘要一致（统一换行比较）；`git diff --check` 通过，新增/变更文档的本地链接目标均存在。最终完整 Flutter 与 Android 包校验小型日志另保存本机 `logs/flutter_final_150.log`、`logs/release_summary_final.log`，大型构建缓存和原始测试输出留在服务器。
+
+## 2026-11-12：背景透明、全局慢漂与拖拽（未发布）
+
+- 最终源码静态分析无问题，134项Flutter回归全部通过。新增覆盖两分钟单球/三分钟六球的区域覆盖、速度与边界、松手方向和衰减、18像素拖动阈值、编辑按钮防误拖、点击/长按/键盘、失焦取消、减少动态和开场安静后的单球惯性。
+- 实际Flutter像素测试确认背景不透明度30%时，背景alpha约77/255，泡泡边缘内部与纸片内容区域alpha为255/255。Windows使用逐像素合成，不再以全窗alpha降低前景不透明度；实现参考[window_manager Windows背景合成实现](https://github.com/leanflutter/window_manager/blob/v0.4.3/packages/window_manager/windows/window_manager.cpp#L605)。
+- 共用检查位于远端 `/home/wzh/my_code/todo_list/.build_cache/background_roaming`，复用已有Flutter/依赖缓存；日志 `all_tests.log` 和 `refine_tests.log`。未触及远端原工程或个人任务数据。
+- Win32/MSVC与桌面合成需要本机环境，因此本地执行16项Windows原生检查，全部通过；最终Windows Release构建成功。原生检查覆盖无全窗alpha、交互样式、置顶、简洁模式、重启恢复、旧偏好与写入失败回滚。
+- GUI尝试使用独立数据与测试进程，未替换正在运行的个人待办。无截图的可访问性读取能看到三项测试待办和编辑控件，但截图接口持续返回 `FrameArrived timed out` / `window capture timed out`，未完成Windows桌面透明视觉验收；测试进程已清理。像素回归不等同于所有显卡/Windows版本上的实际桌面合成验证。
+- 本地预览包位于 `dist/preview_roaming_20261112/small_orbit-1.0.0-rc.7-windows-x64.zip`，包含最终EXE、运行库、资产和说明；ZIP CRC及必需文件校验通过，不含测试EXE或任务数据。未发布、未更新版本号或覆盖原公开安装包；Android共享手势由Flutter测试覆盖，本轮没有构建APK或做真机验收。
+
 ## 2026-11-11：审查修复（未发布）
 
 - Android从每任务一个闹钟改为最近64个的滚动窗口，接收器在每次触发后重排全部候选，保留后台补位能力。兼容旧版无登记清单的迁移；先取消窗口外闹钟，再持久化登记，最后逐个注册。注册失败隔离，取消/登记失败可重试。

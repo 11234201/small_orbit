@@ -71,7 +71,7 @@ void main() {
         throwsFormatException,
       );
       final raw = jsonDecode(source) as Map<String, dynamic>;
-      raw['version'] = 2;
+      raw['version'] = BackupCodec.currentVersion + 1;
       expect(() => BackupCodec.decode(jsonEncode(raw)), throwsFormatException);
       final duplicate = BackupCodec.encode(
         OrbitDocument(tasks: [task(), task()]),

@@ -109,7 +109,7 @@ void main() {
       await store.save(OrbitDocument(tasks: [task()]));
       await store.save(OrbitDocument());
       final newer = jsonDecode(await store.current.readAsString()) as Map;
-      newer['version'] = 2;
+      newer['version'] = BackupCodec.currentVersion + 1;
       final original = jsonEncode(newer);
       await store.current.writeAsString(original);
       final previous = await store.previous.readAsString();

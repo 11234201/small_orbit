@@ -231,5 +231,8 @@ class ReminderReceiver : BroadcastReceiver() {
     }
 }
 class RebootReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) { ReminderScheduler.scheduleAll(context) }
+    override fun onReceive(context: Context, intent: Intent) {
+        ReminderScheduler.scheduleAll(context)
+        try { FocusScheduler.schedule(context) } catch (error: Exception) { android.util.Log.e("SmallOrbit", "Focus reschedule failed", error) }
+    }
 }

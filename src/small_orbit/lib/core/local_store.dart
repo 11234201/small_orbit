@@ -9,12 +9,13 @@ class UnsupportedBackupVersion extends FormatException {
 }
 
 class BackupCodec {
-  static const maxBytes = 16 * 1024 * 1024;
+  static const maxBytes = 128 * 1024 * 1024;
+  static const currentVersion = 2;
   static String encode(OrbitDocument document) {
     final payload = jsonEncode(document.toJson());
     return jsonEncode({
       'format': 'small-orbit',
-      'version': 1,
+      'version': currentVersion,
       'savedAt': DateTime.now().toUtc().toIso8601String(),
       'payload': payload,
       'sha256': sha256.convert(utf8.encode(payload)).toString(),
@@ -24,15 +25,15 @@ class BackupCodec {
   static OrbitDocument decode(String source) {
     try {
       if (utf8.encode(source).length > maxBytes)
-        throw const FormatException('文件超过 16 MB');
+        throw const FormatException('文件超过 128 MB');
       final raw = jsonDecode(source);
       if (raw is! Map || raw['format'] != 'small-orbit')
         throw const FormatException('不是小事星球备份');
       final version = raw['version'];
-      if (version is int && version > 1) {
+      if (version is int && version > currentVersion) {
         throw const UnsupportedBackupVersion();
       }
-      if (version is! int || version != 1) {
+      if (version is! int || (version < 1 || version > currentVersion)) {
         throw const FormatException('备份版本无效');
       }
       final payload = raw['payload'];
@@ -54,6 +55,7 @@ class BackupCodec {
 class LocalStore {
   LocalStore(this.directory);
   final Directory directory;
+  bool _legacyChecked = false;
   String? recoveryNotice;
   File get current => File('${directory.path}/tasks.json');
   File get previous => File('${directory.path}/tasks.previous.json');
@@ -61,13 +63,13 @@ class LocalStore {
 
   Future<String> readBounded(File file) async {
     if (await file.length() > BackupCodec.maxBytes)
-      throw const FormatException('文件超过 16 MB');
+      throw const FormatException('文件超过 128 MB');
     final bytes = BytesBuilder(copy: false);
     await for (final chunk in file.openRead(0, BackupCodec.maxBytes + 1)) {
       bytes.add(chunk);
     }
     if (bytes.length > BackupCodec.maxBytes)
-      throw const FormatException('文件超过 16 MB');
+      throw const FormatException('文件超过 128 MB');
     // Decode separately so malformed UTF-8 is distinguishable from a genuine
     // filesystem/permission failure. Both must leave the original untouched.
     return utf8.decode(bytes.takeBytes());
@@ -91,7 +93,11 @@ class LocalStore {
     }
     if (await previous.exists()) {
       try {
-        final document = BackupCodec.decode(await readBounded(previous));
+        final source = await readBounded(previous);
+        final document = BackupCodec.decode(source);
+        // Recovery also writes format 2. Archive an old recovery file before
+        // replacing current; otherwise the next save can erase the last v1 copy.
+        await _preserveLegacyBackup(source);
         if (await current.exists()) {
           await current.copy(
             '${directory.path}/damaged-${DateTime.now().microsecondsSinceEpoch}.json',
@@ -113,6 +119,11 @@ class LocalStore {
   }
 
   Future<void> save(OrbitDocument document) async {
+    // Preserve exact old bytes before the first schema-2 write.
+    if (!_legacyChecked && await current.exists()) {
+      await _preserveLegacyBackup(await readBounded(current));
+    }
+    _legacyChecked = true;
     await directory.create(recursive: true);
     final source = BackupCodec.encode(document);
     BackupCodec.decode(source);
@@ -129,6 +140,19 @@ class LocalStore {
         await previous.copy(current.path);
       rethrow;
     }
+  }
+
+  Future<void> _preserveLegacyBackup(String source) async {
+    final envelope = jsonDecode(source);
+    if (envelope is! Map || envelope['version'] != 1) return;
+    BackupCodec.decode(source);
+    await backupDirectory.create(recursive: true);
+    final digest = sha256.convert(utf8.encode(source)).toString();
+    final backup = File(
+      '${backupDirectory.path}/before-format-2-$digest.orbit',
+    );
+    if (!await backup.exists()) await backup.writeAsString(source, flush: true);
+    if (await backup.readAsString() != source) throw StateError('升级备份校验失败');
   }
 
   Future<File> backup(OrbitDocument document) async {
@@ -188,6 +212,8 @@ class LocalStore {
       final actual = await sha256.bind(copy.openRead()).first;
       if (expected != actual) throw StateError('原文件备份校验失败，没有恢复数据');
     }
+    _legacyChecked =
+        true; // Exact originals were verified in the recovery archive above.
     await save(incoming);
     recoveryNotice = '已从备份恢复；原文件已保留在 ${archive.path}';
     return archive;

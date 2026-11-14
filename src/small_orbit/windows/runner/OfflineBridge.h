@@ -6,6 +6,7 @@
 #include <flutter/standard_method_codec.h>
 #include <memory>
 #include <optional>
+#include <string>
 #include "WindowPlacement.h"
 #include "WindowOptions.h"
 
@@ -15,6 +16,8 @@ class OfflineBridge {
   ~OfflineBridge();
   std::optional<LRESULT> HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
  private:
+  std::string lastFocusNotification_;
+  ULONGLONG lastFeedback_ = 0;
   void AddTray();
   void ShowWindow();
   bool ShowNotification(const std::string& title, const std::string& body);

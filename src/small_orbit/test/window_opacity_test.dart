@@ -1,9 +1,52 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:small_orbit/core/task_model.dart';
+import 'package:small_orbit/ui/bubble_surface.dart';
+
 import 'compact_view_test.dart';
 
 void main() {
-  testWidgets('full and compact menus adjust whole-window opacity and reset', (
+  for (final mode in [DisplayMode.bubbles, DisplayMode.papers]) {
+    testWidgets(
+      '$mode pixels keep opaque tasks above a translucent background',
+      (tester) async {
+        final fixture = DesktopFixture(compact: true);
+        await fixture.initialize();
+        await fixture.controller.settings(
+          fixture.controller.document.settings.copyWith(display: mode),
+        );
+        await fixture.window.setOpacity(30);
+        final key = GlobalKey();
+        await tester.pumpWidget(RepaintBoundary(key: key, child: fixture.app));
+        await tester.pumpAndSettle();
+        final boundary =
+            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        final snapshot = boundary.toImageSync();
+        final bytes = await tester.runAsync(() => snapshot.toByteData());
+        int alpha(Offset point) => bytes!.getUint8(
+          (point.dy.floor() * snapshot.width + point.dx.floor()) * 4 + 3,
+        );
+        expect(alpha(const Offset(1, 100)), closeTo(77, 1));
+        final Offset foreground;
+        if (mode == DisplayMode.bubbles) {
+          final paint = find.byWidgetPredicate(
+            (widget) =>
+                widget is CustomPaint && widget.painter is BubbleSurface,
+          );
+          final rect = tester.getRect(paint);
+          foreground = Offset(rect.left + rect.width * .9, rect.center.dy);
+        } else {
+          foreground = tester.getCenter(find.text('待办事项0'));
+        }
+        expect(alpha(foreground), 255);
+        snapshot.dispose();
+        await tester.pumpWidget(const SizedBox());
+        fixture.dispose();
+      },
+    );
+  }
+  testWidgets('full and compact menus adjust background opacity and reset', (
     tester,
   ) async {
     for (final compact in [false, true]) {
@@ -25,7 +68,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(fixture.window.opacity, 60);
       expect(fixture.window.compact, compact);
-      expect(find.text('不透明度：60%'), findsOneWidget);
+      expect(find.text('背景不透明度：60%'), findsOneWidget);
+      expect(
+        tester.widget<Scaffold>(find.byType(Scaffold).first).backgroundColor!.a,
+        closeTo(.6, .001),
+      );
       await tester.tap(find.text('恢复不透明'));
       await tester.pumpAndSettle();
       expect(fixture.window.opacity, 100);
@@ -81,7 +128,7 @@ void main() {
       fixture.opacity = 100;
       await fixture.window.refreshOptions();
       await tester.pumpAndSettle();
-      expect(find.text('不透明度：100%'), findsOneWidget);
+      expect(find.text('背景不透明度：100%'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       fixture.dispose();

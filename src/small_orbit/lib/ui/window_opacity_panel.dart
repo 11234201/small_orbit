@@ -1,5 +1,7 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../platform/window_service.dart';
 
 class WindowOpacityPanel extends StatefulWidget {
@@ -68,7 +70,7 @@ class _WindowOpacityPanelState extends State<WindowOpacityPanel> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('不透明度：$_value%'),
+                Text('背景不透明度：$_value%'),
                 Slider(
                   value: _value.toDouble(),
                   min: 30,
@@ -76,7 +78,7 @@ class _WindowOpacityPanelState extends State<WindowOpacityPanel> {
                   divisions: 14,
                   label: '$_value%',
                   semanticFormatterCallback: (value) =>
-                      '不透明度 ${value.round()}%',
+                      '背景不透明度 ${value.round()}%',
                   onChangeStart: busy ? null : (_) => _dragging = true,
                   onChanged: busy
                       ? null
@@ -88,7 +90,9 @@ class _WindowOpacityPanelState extends State<WindowOpacityPanel> {
                           unawaited(_apply(value.round()));
                         },
                 ),
-                const Text('30% 更通透，100% 完全不透明。松开滑块后，整个窗口生效并自动保存。'),
+                const Text(
+                  '只调节窗口背景，泡泡、纸片和文字保持不透明。30% 更通透，100% 背景完全不透明；松开滑块后自动保存。',
+                ),
                 if (_saving)
                   const Padding(
                     padding: EdgeInsets.only(top: 12),

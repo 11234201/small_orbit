@@ -1,4 +1,6 @@
 import 'dart:math';
+import 'play_settings.dart';
+import 'completion_collection.dart';
 import 'package:characters/characters.dart';
 
 enum DisplayMode { bubbles, papers, cards }
@@ -69,7 +71,13 @@ class AppSettings {
     this.reduceMotion = false,
     this.remindersEnabled = true,
     this.windowGeometry,
+    this.gravityEnabled = false,
+    this.gravity = GravityStyle.weightless,
+    this.material = BubbleMaterial.classic,
   });
+  final bool gravityEnabled;
+  final GravityStyle gravity;
+  final BubbleMaterial material;
   final DisplayMode display;
   final MotionMode motion;
   final bool paused;
@@ -84,6 +92,9 @@ class AppSettings {
     bool? reduceMotion,
     bool? remindersEnabled,
     Map<String, int>? windowGeometry,
+    bool? gravityEnabled,
+    GravityStyle? gravity,
+    BubbleMaterial? material,
   }) => AppSettings(
     display: display ?? this.display,
     motion: motion ?? this.motion,
@@ -91,9 +102,15 @@ class AppSettings {
     reduceMotion: reduceMotion ?? this.reduceMotion,
     remindersEnabled: remindersEnabled ?? this.remindersEnabled,
     windowGeometry: windowGeometry ?? this.windowGeometry,
+    gravityEnabled: gravityEnabled ?? this.gravityEnabled,
+    gravity: gravity ?? this.gravity,
+    material: material ?? this.material,
   );
 
   Map<String, Object?> toJson() => {
+    'gravityEnabled': gravityEnabled,
+    'gravity': gravity.name,
+    'material': material.name,
     'display': display.name,
     'motion': motion.name,
     'paused': paused,
@@ -121,6 +138,17 @@ class AppSettings {
       reduceMotion: json['reduceMotion'] as bool,
       remindersEnabled: json['remindersEnabled'] as bool,
       windowGeometry: geometry,
+      gravityEnabled: json['gravityEnabled'] == true,
+      gravity: enumValue(
+        GravityStyle.values,
+        json['gravity'] ?? 'weightless',
+        '物理预设',
+      ),
+      material: enumValue(
+        BubbleMaterial.values,
+        json['material'] ?? 'classic',
+        '材质',
+      ),
     );
   }
 }
@@ -135,6 +163,8 @@ class OrbitTask {
     this.repeat = RepeatKind.none,
     this.importance = 2,
     this.urgency = 2,
+    this.estimatedMinutes,
+    this.energy,
     Map<String, String?> records = const {},
   }) : records = Map.unmodifiable(records);
   final String id;
@@ -145,6 +175,8 @@ class OrbitTask {
   final RepeatKind repeat;
   final int importance;
   final int urgency;
+  final int? estimatedMinutes;
+  final TaskEnergy? energy;
 
   /// A null value is a missed occurrence; an ISO timestamp is a completion.
   final Map<String, String?> records;
@@ -163,6 +195,10 @@ class OrbitTask {
     int? importance,
     int? urgency,
     Map<String, String?>? records,
+    int? estimatedMinutes,
+    bool clearEstimate = false,
+    TaskEnergy? energy,
+    bool clearEnergy = false,
   }) {
     final result = OrbitTask(
       id: id,
@@ -175,6 +211,10 @@ class OrbitTask {
       repeat: repeat ?? this.repeat,
       importance: importance ?? this.importance,
       urgency: urgency ?? this.urgency,
+      estimatedMinutes: clearEstimate
+          ? null
+          : estimatedMinutes ?? this.estimatedMinutes,
+      energy: clearEnergy ? null : energy ?? this.energy,
       records: records ?? this.records,
     );
     if (result.date == this.date &&
@@ -251,6 +291,8 @@ class OrbitTask {
     'repeat': repeat.name,
     'importance': importance,
     'urgency': urgency,
+    'estimatedMinutes': estimatedMinutes,
+    'energy': energy?.name,
     'records': records,
   };
 
@@ -270,6 +312,11 @@ class OrbitTask {
           (json[key] as int) > 3) {
         throw FormatException('$key 必须为 1–3');
       }
+    }
+    final estimate = json['estimatedMinutes'];
+    if (estimate != null &&
+        (estimate is! int || estimate < 1 || estimate > 480)) {
+      throw const FormatException('预计耗时必须在 1～480 分钟内');
     }
     final created = DateTime.tryParse(
       json['createdAt'] is String ? json['createdAt'] as String : '',
@@ -311,6 +358,10 @@ class OrbitTask {
       reminderMinute: minute as int?,
       importance: json['importance'] as int,
       urgency: json['urgency'] as int,
+      estimatedMinutes: estimate as int?,
+      energy: json['energy'] == null
+          ? null
+          : enumValue(TaskEnergy.values, json['energy'], '精力'),
       records: records,
     );
   }
@@ -348,14 +399,33 @@ class OrbitDocument {
   OrbitDocument({
     Iterable<OrbitTask> tasks = const [],
     this.settings = const AppSettings(),
-  }) : tasks = List.unmodifiable(tasks);
+    List<CompletionMemory>? memories,
+    Map<String, List<double>> islandLayout = const {},
+  }) : tasks = List.unmodifiable(tasks),
+       islandLayout = Map.unmodifiable(
+         islandLayout.map(
+           (key, value) => MapEntry(key, List<double>.unmodifiable(value)),
+         ),
+       ) {
+    this.memories = List.unmodifiable(memories ?? migrateMemories(this.tasks));
+  }
   final List<OrbitTask> tasks;
   final AppSettings settings;
-  OrbitDocument copyWith({Iterable<OrbitTask>? tasks, AppSettings? settings}) =>
-      OrbitDocument(
-        tasks: tasks ?? this.tasks,
-        settings: settings ?? this.settings,
-      );
+  late final List<CompletionMemory> memories;
+  final Map<String, List<double>> islandLayout;
+  Iterable<CompletionMemory> get activeMemories =>
+      memories.where((m) => m.active);
+  OrbitDocument copyWith({
+    Iterable<OrbitTask>? tasks,
+    AppSettings? settings,
+    List<CompletionMemory>? memories,
+    Map<String, List<double>>? islandLayout,
+  }) => OrbitDocument(
+    tasks: tasks ?? this.tasks,
+    settings: settings ?? this.settings,
+    memories: memories ?? this.memories,
+    islandLayout: islandLayout ?? this.islandLayout,
+  );
 
   OrbitDocument materialize(DateTime now) {
     List<OrbitTask>? updated;
@@ -411,6 +481,9 @@ class OrbitDocument {
   }
 
   Map<String, Object?> toJson() => {
+    'memories': memories.map((m) => m.toJson()).toList(),
+    'islandLayout': islandLayout,
+    'collectionVersion': 1,
     'settings': settings.toJson(),
     'tasks': tasks.map((task) => task.toJson()).toList(),
   };
@@ -429,8 +502,43 @@ class OrbitDocument {
       throw const FormatException('存在重复任务标识');
     if (tasks.fold<int>(0, (sum, task) => sum + task.records.length) > 250000)
       throw const FormatException('历史记录过多');
+    if (json['collectionVersion'] != null && json['collectionVersion'] != 1) {
+      throw const FormatException('收藏版本不支持');
+    }
+    final rawMemories = json['memories'];
+    if (rawMemories != null &&
+        (rawMemories is! List || rawMemories.length > 500000)) {
+      throw const FormatException('收藏记录过多或无效');
+    }
+    final memories = rawMemories == null
+        ? migrateMemories(tasks)
+        : (rawMemories as List).map(CompletionMemory.fromJson).toList();
+    if (memories.map((m) => m.id).toSet().length != memories.length) {
+      throw const FormatException('重复收藏标识');
+    }
+    final layout = <String, List<double>>{};
+    final rawLayout = json['islandLayout'];
+    if (rawLayout != null) {
+      if (rawLayout is! Map || rawLayout.length > 200)
+        throw const FormatException('小岛布局无效');
+      for (final entry in rawLayout.entries) {
+        final value = entry.value;
+        if (entry.key is! String ||
+            (entry.key as String).length > 100 ||
+            value is! List ||
+            value.length != 2 ||
+            value.any((v) => v is! num || !v.isFinite || v < 0 || v > 1)) {
+          throw const FormatException('小岛坐标无效');
+        }
+        layout[entry.key as String] = value
+            .map((v) => (v as num).toDouble())
+            .toList();
+      }
+    }
     return OrbitDocument(
       tasks: tasks,
+      memories: memories,
+      islandLayout: layout,
       settings: AppSettings.fromJson(
         Map<String, dynamic>.from(json['settings'] as Map),
       ),

@@ -56,7 +56,7 @@ cd android
 
 `bash scripts/verify_shared.sh` 现在从脚本位置定位仓库，不依赖固定服务器路径。默认使用PATH中的Flutter/JDK/Android SDK；存在 `.toolchain/env.sh` 时复用维护者环境，也可用 `ORBIT_TOOLCHAIN_ENV` 指定。`ORBIT_LOG_DIR` 可指定独立日志目录。脚本先按pubspec.lock校验依赖，再执行分析/测试；通过 `flutter build apk --debug --config-only --no-pub` 为干净源码生成被忽略的Gradle包装器与local.properties。Gradle默认使用3GB堆、2个worker，不要求已有构建目录。
 
-发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前为 `1.0.0-rc.7+9`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
+发布版本只在 `src/small_orbit/pubspec.yaml` 设置，当前本地候选为 `1.0.0-rc.10+12`。Android 与 Windows 包名由脚本读取；设置页显示原生包版本，Windows 打包先核对 EXE 产品版本，避免把旧构建打成新版本。
 
 当前模型使用与输入框一致的 `characters` 字符计数。在项目根目录单独编译模型基准时，要提供应用包配置：`dart compile exe --packages=src/small_orbit/.dart_tool/package_config.json scripts/benchmark_model.dart -o .build_cache/benchmark_model`。此前已保存的基线/优化样本源文件不变，旧测量仍按当时源码复现。
 
@@ -93,3 +93,5 @@ Flutter 测试覆盖日历、文件校验、中断恢复、导入备份、跨模
 `SMALL_ORBIT_DATA_DIR` 可为测试指定独立数据目录。没有真机时，不把自动测试等同于 Android 厂商后台提醒验证。
 
 参考：[Android 系统提醒](https://developer.android.com/develop/background-work/services/alarms)、[Flutter Windows 打包](https://docs.flutter.dev/platform-integration/windows/building)。
+
+实际 Windows Release 置顶回归：打包后执行 `scripts/verify_windows_options.ps1`。使用独立数据、屏幕外非激活窗口，验证置顶/非置顶、简洁状态、隐藏恢复和正常退出；发现已有应用进程时停止，避免干扰用户。

@@ -1,6 +1,9 @@
 import 'dart:async';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+
 import '../core/task_model.dart';
 import '../core/bubble_engine.dart';
 import 'bubble_surface.dart';
@@ -70,6 +73,9 @@ class _TaskStageState extends State<TaskStage>
   bool _visible = true;
   bool _interactive = true;
   final Map<String, Set<String>> _interactionHolds = {};
+  final Map<String, (Offset, Offset)> _dragOrigins = {};
+  final Set<String> _releasedUnderPointer = {};
+  int? _gravityPointer;
   int _page = 0;
   int _cardCursor = 0;
   String? _cardIdentity;
@@ -134,6 +140,10 @@ class _TaskStageState extends State<TaskStage>
   }
 
   void _hold(String id, String reason, bool held) {
+    if (reason == 'hover') {
+      if (!held) _releasedUnderPointer.remove(id);
+      if (held && _releasedUnderPointer.contains(id)) return;
+    }
     if (held) {
       (_interactionHolds[id] ??= {}).add(reason);
     } else {
@@ -147,9 +157,45 @@ class _TaskStageState extends State<TaskStage>
   void _restoreInteractionHolds() {
     final identities = _engine.bodies.map((body) => body.id).toSet();
     _interactionHolds.removeWhere((id, _) => !identities.contains(id));
+    _dragOrigins.removeWhere((id, _) => !identities.contains(id));
+    _releasedUnderPointer.removeWhere((id) => !identities.contains(id));
     for (final body in _engine.bodies) {
       body.holds.clear();
       if (_interactive) body.holds.addAll(_interactionHolds[body.id] ?? {});
+    }
+  }
+
+  void _dragStart(BubbleBody body, DragStartDetails details) {
+    if (!_interactive) return;
+    Tooltip.dismissAllToolTips();
+    _dragOrigins[body.id] = (details.globalPosition, body.position);
+    _hold(body.id, 'drag', true);
+  }
+
+  void _dragUpdate(String id, DragUpdateDetails details) {
+    final origin = _dragOrigins[id];
+    if (origin == null || !_interactive) return;
+    // Use screen deltas: Flow translates the hit target as the body moves.
+    _engine.dragTo(id, origin.$2 + details.globalPosition - origin.$1);
+  }
+
+  void _dragEnd(String id, Offset velocity) {
+    if (_dragOrigins.remove(id) == null) return;
+    _hold(id, 'drag', false);
+    _hold(id, 'press', false);
+    _hold(id, 'hover', false);
+    // The release point is still under the mouse. Let the throw escape until
+    // the pointer exits; a new press or keyboard focus always holds it again.
+    _releasedUnderPointer.add(id);
+    _engine.release(id, velocity);
+    _syncTicker();
+  }
+
+  void _cancelDrags() {
+    _gravityPointer = null;
+    _engine.attract(null);
+    for (final id in _dragOrigins.keys.toList()) {
+      _dragEnd(id, Offset.zero);
     }
   }
 
@@ -162,6 +208,7 @@ class _TaskStageState extends State<TaskStage>
     if (interactive != _interactive) {
       _interactive = interactive;
       if (!interactive) {
+        _cancelDrags();
         // A press can be cancelled by switching apps. Logical keyboard focus
         // survives that switch and is restored only when this window is active.
         for (final holds in _interactionHolds.values) {
@@ -169,6 +216,7 @@ class _TaskStageState extends State<TaskStage>
         }
         Tooltip.dismissAllToolTips();
       }
+      if (!widget.settings.gravityEnabled) _engine.attract(null);
       _restoreInteractionHolds();
       setState(() {});
     }
@@ -179,6 +227,7 @@ class _TaskStageState extends State<TaskStage>
   void didUpdateWidget(covariant TaskStage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.settings.display != widget.settings.display) {
+      _cancelDrags();
       _cardIdentity = null;
     }
     if (oldWidget.settings.display != widget.settings.display ||
@@ -391,129 +440,208 @@ class _TaskStageState extends State<TaskStage>
             widget.settings.reduceMotion ||
             MediaQuery.disableAnimationsOf(context),
         capacity: _pageSize,
+        gravityStyle: widget.settings.gravity,
+        bubbleMaterial: widget.settings.material,
       );
+      if (!widget.settings.gravityEnabled) _engine.attract(null);
       _restoreInteractionHolds();
+      if (!TickerMode.valuesOf(context).enabled) _cancelDrags();
       _syncTicker();
       return TooltipVisibility(
         visible: _interactive,
         child: ClipRect(
-          child: Flow(
-            delegate: _BubbleFlow(_engine),
-            children: List.generate(items.length, (index) {
-              final item = items[index], body = _engine.bodies[index];
-              final color = taskColor(item.task.id);
-              return MouseRegion(
-                key: ValueKey('bubble-${item.identity}'),
-                onEnter: (_) => _hold(item.identity, 'hover', true),
-                onExit: (_) => _hold(item.identity, 'hover', false),
+          child: Stack(
+            children: [
+              Positioned.fill(
                 child: Listener(
-                  onPointerDown: (_) => _hold(item.identity, 'press', true),
-                  onPointerUp: (_) => _hold(item.identity, 'press', false),
-                  onPointerCancel: (_) => _hold(item.identity, 'press', false),
-                  child: Focus(
-                    canRequestFocus: false,
-                    onFocusChange: (value) =>
-                        _hold(item.identity, 'focus', value),
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween(
-                        end: _finishing.contains(item.identity) ? 1 : 0,
-                      ),
-                      duration: _motionDuration,
-                      builder: (context, progress, child) => CustomPaint(
-                        foregroundPainter: BubbleBurst(
-                          color: color,
-                          progress: progress,
-                        ),
-                        child: Opacity(opacity: 1 - progress, child: child),
-                      ),
-                      child: AnimatedScale(
-                        scale: _finishing.contains(item.identity) ? .05 : 1,
-                        duration: _motionDuration,
-                        curve: Curves.easeInBack,
-                        child: SizedBox(
-                          width: body.radius * 2,
-                          height: body.radius * 2,
-                          child: CustomPaint(
-                            painter: BubbleSurface(
-                              engine: _engine,
-                              body: body,
+                  behavior: HitTestBehavior.opaque,
+                  onPointerDown: (event) {
+                    if (!widget.settings.gravityEnabled ||
+                        !_interactive ||
+                        _engine.paused ||
+                        _gravityPointer != null)
+                      return;
+                    _gravityPointer = event.pointer;
+                    _engine.attract(event.localPosition);
+                    _syncTicker();
+                  },
+                  onPointerMove: (event) {
+                    if (_gravityPointer == event.pointer)
+                      _engine.attract(event.localPosition);
+                  },
+                  onPointerUp: (event) {
+                    if (_gravityPointer == event.pointer) {
+                      _gravityPointer = null;
+                      _engine.attract(null);
+                      _syncTicker();
+                    }
+                  },
+                  onPointerCancel: (event) {
+                    if (_gravityPointer == event.pointer) {
+                      _gravityPointer = null;
+                      _engine.attract(null);
+                      _syncTicker();
+                    }
+                  },
+                ),
+              ),
+              Flow(
+                delegate: _BubbleFlow(_engine),
+                children: List.generate(items.length, (index) {
+                  final item = items[index], body = _engine.bodies[index];
+                  final color = taskColor(item.task.id);
+                  return MouseRegion(
+                    key: ValueKey('bubble-${item.identity}'),
+                    onEnter: (_) => _hold(item.identity, 'hover', true),
+                    onExit: (_) => _hold(item.identity, 'hover', false),
+                    child: Listener(
+                      onPointerDown: (_) => _hold(item.identity, 'press', true),
+                      onPointerUp: (_) => _hold(item.identity, 'press', false),
+                      onPointerCancel: (_) =>
+                          _hold(item.identity, 'press', false),
+                      child: Focus(
+                        canRequestFocus: false,
+                        onFocusChange: (value) =>
+                            _hold(item.identity, 'focus', value),
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween(
+                            end: _finishing.contains(item.identity) ? 1 : 0,
+                          ),
+                          duration: _motionDuration,
+                          builder: (context, progress, child) => CustomPaint(
+                            foregroundPainter: BubbleBurst(
                               color: color,
+                              progress: progress,
                             ),
-                            child: Material(
-                              color: Colors.transparent,
-                              shape: const CircleBorder(),
-                              clipBehavior: Clip.antiAlias,
-                              child: Tooltip(
-                                message:
-                                    '${item.task.title}\n${priorityCaption(item.task)}',
-                                triggerMode: TooltipTriggerMode.manual,
-                                waitDuration: const Duration(milliseconds: 600),
-                                constraints: const BoxConstraints(
-                                  maxWidth: 280,
+                            child: Opacity(opacity: 1 - progress, child: child),
+                          ),
+                          child: AnimatedScale(
+                            scale: _finishing.contains(item.identity) ? .05 : 1,
+                            duration: _motionDuration,
+                            curve: Curves.easeInBack,
+                            child: SizedBox(
+                              width: body.radius * 2,
+                              height: body.radius * 2,
+                              child: CustomPaint(
+                                painter: BubbleSurface(
+                                  engine: _engine,
+                                  material: widget.settings.material,
+                                  body: body,
+                                  color: color,
                                 ),
-                                child: InkWell(
-                                  onTap: _pending.contains(item.identity)
-                                      ? null
-                                      : () => _finish(item),
-                                  onLongPress: () => widget.onEdit(item.task),
-                                  customBorder: const CircleBorder(),
-                                  child: Padding(
-                                    padding: EdgeInsets.symmetric(
-                                      horizontal: body.radius * .22,
-                                      vertical: body.radius * .16,
+                                child: Material(
+                                  color: Colors.transparent,
+                                  shape: const CircleBorder(),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Tooltip(
+                                    message:
+                                        '${item.task.title}\n${priorityCaption(item.task)}',
+                                    triggerMode: TooltipTriggerMode.manual,
+                                    waitDuration: const Duration(
+                                      milliseconds: 600,
                                     ),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        Flexible(
-                                          child: Text(
-                                            item.task.title.replaceAll(
-                                              RegExp(r'\s+'),
-                                              ' ',
-                                            ),
-                                            semanticsLabel: item.task.title,
-                                            textAlign: TextAlign.center,
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              fontSize: 15,
-                                              fontWeight: FontWeight.w500,
-                                              color: const Color(0xff493c55),
-                                              height: 1.25,
-                                            ),
+                                    constraints: const BoxConstraints(
+                                      maxWidth: 280,
+                                    ),
+                                    child: _BubbleDragTarget(
+                                      onPanStart:
+                                          _pending.contains(item.identity) ||
+                                              !_interactive
+                                          ? null
+                                          : (details) =>
+                                                _dragStart(body, details),
+                                      onPanUpdate: (details) =>
+                                          _dragUpdate(item.identity, details),
+                                      onPanEnd: (details) => _dragEnd(
+                                        item.identity,
+                                        details.velocity.pixelsPerSecond,
+                                      ),
+                                      onPanCancel: () =>
+                                          _dragEnd(item.identity, Offset.zero),
+                                      child: InkWell(
+                                        onTap: _pending.contains(item.identity)
+                                            ? null
+                                            : () => _finish(item),
+                                        onLongPress: () =>
+                                            widget.onEdit(item.task),
+                                        customBorder: const CircleBorder(),
+                                        child: Padding(
+                                          padding: EdgeInsets.symmetric(
+                                            horizontal: body.radius * .22,
+                                            vertical: body.radius * .16,
                                           ),
-                                        ),
-                                        if (!largeText &&
-                                            body.radius > 66 &&
-                                            occurrenceCaption(item).isNotEmpty)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                              top: 5,
-                                            ),
-                                            child: Text(
-                                              occurrenceCaption(item),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontSize: 10,
+                                          child: Column(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              Flexible(
+                                                child: Text(
+                                                  item.task.title.replaceAll(
+                                                    RegExp(r'\s+'),
+                                                    ' ',
+                                                  ),
+                                                  semanticsLabel:
+                                                      item.task.title,
+                                                  textAlign: TextAlign.center,
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontSize: 15,
+                                                    fontWeight: FontWeight.w500,
+                                                    color: const Color(
+                                                      0xff493c55,
+                                                    ),
+                                                    height: 1.25,
+                                                  ),
+                                                ),
                                               ),
-                                            ),
-                                          ),
-                                        SizedBox(
-                                          height: 24,
-                                          child: IconButton(
-                                            tooltip: '编辑 ${item.task.title}',
-                                            padding: EdgeInsets.zero,
-                                            iconSize: 15,
-                                            onPressed: () =>
-                                                widget.onEdit(item.task),
-                                            icon: const Icon(
-                                              Icons.edit_outlined,
-                                            ),
+                                              if (!largeText &&
+                                                  body.radius > 66 &&
+                                                  occurrenceCaption(
+                                                    item,
+                                                  ).isNotEmpty)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        top: 5,
+                                                      ),
+                                                  child: Text(
+                                                    occurrenceCaption(item),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                    ),
+                                                  ),
+                                                ),
+                                              SizedBox(
+                                                height: 24,
+                                                child: _BubbleDragTarget(
+                                                  // A drag starting on the edit control cancels
+                                                  // its tap; it must never throw or complete.
+                                                  onPanStart: (_) {},
+                                                  onPanUpdate: (_) {},
+                                                  onPanEnd: (_) {},
+                                                  onPanCancel: () {},
+                                                  child: IconButton(
+                                                    tooltip:
+                                                        '编辑 ${item.task.title}',
+                                                    padding: EdgeInsets.zero,
+                                                    iconSize: 15,
+                                                    onPressed: () => widget
+                                                        .onEdit(item.task),
+                                                    icon: const Icon(
+                                                      Icons.edit_outlined,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
-                                      ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -523,10 +651,10 @@ class _TaskStageState extends State<TaskStage>
                         ),
                       ),
                     ),
-                  ),
-                ),
-              );
-            }),
+                  );
+                }),
+              ),
+            ],
           ),
         ),
       );
@@ -932,4 +1060,58 @@ class _BubbleFlow extends FlowDelegate {
       BoxConstraints.tight(Size.square(engine.bodies[i].radius * 2));
   @override
   bool shouldRepaint(covariant _BubbleFlow oldDelegate) => true;
+}
+
+/// Deliberate travel is needed even with a precise mouse. Tiny hand movements
+/// must not start a throw; the existing InkWell retains tap/keyboard semantics.
+class _BubblePanRecognizer extends PanGestureRecognizer {
+  _BubblePanRecognizer()
+    : super(
+        supportedDevices: const {
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.touch,
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+        },
+      );
+
+  @override
+  bool hasSufficientGlobalDistanceToAccept(
+    PointerDeviceKind pointerDeviceKind,
+    double? deviceTouchSlop,
+  ) => globalDistanceMoved.abs() > 18;
+}
+
+class _BubbleDragTarget extends StatelessWidget {
+  const _BubbleDragTarget({
+    required this.onPanStart,
+    required this.onPanUpdate,
+    required this.onPanEnd,
+    required this.onPanCancel,
+    required this.child,
+  });
+  final GestureDragStartCallback? onPanStart;
+  final GestureDragUpdateCallback onPanUpdate;
+  final GestureDragEndCallback onPanEnd;
+  final GestureDragCancelCallback onPanCancel;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => RawGestureDetector(
+    excludeFromSemantics: true,
+    gestures: {
+      if (onPanStart != null)
+        _BubblePanRecognizer:
+            GestureRecognizerFactoryWithHandlers<_BubblePanRecognizer>(
+              _BubblePanRecognizer.new,
+              (recognizer) => recognizer
+                ..dragStartBehavior = DragStartBehavior.down
+                ..onStart = onPanStart
+                ..onUpdate = onPanUpdate
+                ..onEnd = onPanEnd
+                ..onCancel = onPanCancel,
+            ),
+    },
+    child: child,
+  );
 }
